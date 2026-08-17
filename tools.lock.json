@@ -1,0 +1,17 @@
+{
+  "_comment": "Pinned third-party binaries. Hashes are SHA256 of the exact vendored builds this app was tested with (vendored 2026-06-10, frozen 2026-08-16). Build-Runtime.ps1 verifies bin/*.exe against these hashes and refuses to package a mismatch. To upgrade a tool: replace the exe in bin/, test the app end-to-end, then update the hash here in the same commit.",
+  "tools": {
+    "yt-dlp.exe": {
+      "sha256": "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27",
+      "source": "https://github.com/yt-dlp/yt-dlp/releases"
+    },
+    "ffmpeg.exe": {
+      "sha256": "959bfb1e8a53a035b4307e2872a4bc883fbf0cdb4e2101562e93c7930b7ea423",
+      "source": "https://www.gyan.dev/ffmpeg/builds/"
+    },
+    "ffprobe.exe": {
+      "sha256": "e557e319838cbefcb691f16aa14bb86fd252c20ad78f673deec9500577fd6bf3",
+      "source": "https://www.gyan.dev/ffmpeg/builds/"
+    }
+  }
+}

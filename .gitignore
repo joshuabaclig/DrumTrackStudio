@@ -4,8 +4,11 @@ env/
 # Third-party binaries - downloaded locally by Setup.ps1, not committed
 bin/*.exe
 
-# Compiled app - build locally with Build-Exe.ps1
+# Build outputs - produced by Build-Exe.ps1 / Build-Runtime.ps1 / Build-Installer.ps1
 DrumTrackStudio.exe
+runtime/
+dist/
+checksums.txt
 
 # Personal audio - never share your downloaded/generated tracks
 Downloads/*
