@@ -1,0 +1,22 @@
+# Python virtual environment - large & platform-specific, rebuild with Setup.ps1
+env/
+
+# Third-party binaries - downloaded locally by Setup.ps1, not committed
+bin/*.exe
+
+# Compiled app - build locally with Build-Exe.ps1
+DrumTrackStudio.exe
+
+# Personal audio - never share your downloaded/generated tracks
+Downloads/*
+!Downloads/.gitkeep
+Stems/*
+!Stems/.gitkeep
+
+# Reaper peak cache files
+*.reapeaks
+
+# Pipeline status/log files
+*.log
+dts_status_*.txt
+dts_path_*.txt
