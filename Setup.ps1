@@ -18,7 +18,10 @@ function Get-FileIfMissing([string]$Url, [string]$Dest) {
 }
 
 # ---------- pinned third-party binaries ----------
-Get-FileIfMissing 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' `
+# NOTE: temporarily pulling from the nightly channel instead of stable - see the
+# "_note" on yt-dlp.exe in tools.lock.json for why (YouTube broke the android_vr
+# client on stable builds; revert to the yt-dlp/yt-dlp releases URL once fixed upstream).
+Get-FileIfMissing 'https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe' `
     (Join-Path $BinDir 'yt-dlp.exe')
 
 $ffmpegExe = Join-Path $BinDir 'ffmpeg.exe'
@@ -36,6 +39,24 @@ if (-not (Test-Path -LiteralPath $ffmpegExe)) {
     Remove-Item -Recurse -Force $ffTmp -ErrorAction SilentlyContinue
 } else {
     Write-Host 'Already have ffmpeg.exe / ffprobe.exe.'
+}
+
+# ---------- deno (REQUIRED: yt-dlp uses it as a JS runtime to pass YouTube's
+# anti-bot challenge - without it, downloads fail with HTTP 403) ----------
+$denoExe = Join-Path $BinDir 'deno.exe'
+if (-not (Test-Path -LiteralPath $denoExe)) {
+    Write-Host 'Downloading deno (~40MB, one time)...'
+    $denoZip = Join-Path $env:TEMP 'dts_deno.zip'
+    $denoTmp = Join-Path $env:TEMP 'dts_deno_extract'
+    Invoke-WebRequest -Uri 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip' -OutFile $denoZip
+    Remove-Item -Recurse -Force $denoTmp -ErrorAction SilentlyContinue
+    Expand-Archive -Path $denoZip -DestinationPath $denoTmp -Force
+    $found = Get-ChildItem -Path $denoTmp -Recurse -Filter 'deno.exe' | Select-Object -First 1
+    Copy-Item $found.FullName $denoExe -Force
+    Remove-Item $denoZip -Force -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $denoTmp -ErrorAction SilentlyContinue
+} else {
+    Write-Host 'Already have deno.exe.'
 }
 
 # verify what we have against the pinned hashes (warn-only for dev: upstream 'latest'

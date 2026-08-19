@@ -1,9 +1,10 @@
 {
-  "_comment": "Pinned third-party binaries. Hashes are SHA256 of the exact vendored builds this app was tested with (re-pinned 2026-08-16 to match the 'latest' yt-dlp/ffmpeg builds pulled by the v1.1.0 CI run, after upstream moved past the previous pin). Build-Runtime.ps1 verifies bin/*.exe against these hashes and refuses to package a mismatch. To upgrade a tool: replace the exe in bin/, test the app end-to-end, then update the hash here in the same commit.",
+  "_comment": "Pinned third-party binaries. Hashes are SHA256 of the exact vendored builds this app was tested with. Build-Runtime.ps1 verifies bin/*.exe against these hashes and refuses to package a mismatch. To upgrade a tool: replace the exe in bin/, test the app end-to-end, then update the hash here in the same commit.",
   "tools": {
     "yt-dlp.exe": {
-      "sha256": "52fe3c26dcf71fbdc85b528589020bb0b8e383155cfa81b64dd447bbe35e24b8",
-      "source": "https://github.com/yt-dlp/yt-dlp/releases"
+      "sha256": "652e154bce7170070d0f26415c9a3c35c121f5a7903cb8cde6d31c4577517fb9",
+      "source": "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases",
+      "_note": "TEMPORARILY pinned to nightly@2026.08.18.122307 instead of stable, as a workaround for a YouTube-side rollout that broke the android_vr client on stable builds (403 Forbidden on all downloads - see https://github.com/yt-dlp/yt-dlp/issues/17456, opened 2026-08-18, unresolved as of this pin). This nightly build uses a different client (visionos) that isn't affected. Revert to the stable channel (https://github.com/yt-dlp/yt-dlp/releases) once yt-dlp ships a stable release that fixes #17456 - nightly is less tested in general and shouldn't be the permanent default."
     },
     "ffmpeg.exe": {
       "sha256": "72a489eccd008c2ec2c0a5856c5c75bc3d8bbfa90166c4566865c246445e6aa3",
@@ -12,6 +13,11 @@
     "ffprobe.exe": {
       "sha256": "19202b23c0043f15ad1b7bce2344f406fd52bd6efd8f995ce02e7392a1cec52f",
       "source": "https://www.gyan.dev/ffmpeg/builds/"
+    },
+    "deno.exe": {
+      "sha256": "bf303587cfc4c8e986a34e9f8a63002d0076f1ab83ef2782babad22d0e1253ae",
+      "source": "https://github.com/denoland/deno/releases",
+      "_note": "REQUIRED, not optional - yt-dlp shells out to this as its JS runtime to pass YouTube's anti-bot/signature challenge. Without it, downloads fail with HTTP 403. Not referenced by name anywhere in our own scripts, which is exactly why it got dropped once already - don't repeat that mistake."
     }
   }
 }

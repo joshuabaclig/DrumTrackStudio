@@ -37,13 +37,20 @@ jobs:
           # against the pinned hashes in tools.lock.json (Build-Runtime.ps1 does the
           # verification and fails the build on any mismatch).
           New-Item -ItemType Directory -Force -Path bin | Out-Null
-          Invoke-WebRequest -Uri 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' -OutFile bin/yt-dlp.exe
+          # TEMPORARY: nightly channel instead of stable - see the yt-dlp.exe "_note"
+          # in tools.lock.json (YouTube broke the android_vr client on stable builds).
+          Invoke-WebRequest -Uri 'https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe' -OutFile bin/yt-dlp.exe
           Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile ff.zip
           Expand-Archive ff.zip -DestinationPath fftmp -Force
           $ff = Get-ChildItem fftmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1
           Copy-Item $ff.FullName bin/ffmpeg.exe
           Copy-Item (Join-Path $ff.DirectoryName 'ffprobe.exe') bin/ffprobe.exe
           Remove-Item ff.zip, fftmp -Recurse -Force
+          Invoke-WebRequest -Uri 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip' -OutFile deno.zip
+          Expand-Archive deno.zip -DestinationPath denotmp -Force
+          $deno = Get-ChildItem denotmp -Recurse -Filter deno.exe | Select-Object -First 1
+          Copy-Item $deno.FullName bin/deno.exe
+          Remove-Item deno.zip, denotmp -Recurse -Force
           # NOTE: 'latest' may legitimately differ from the pinned hashes as upstream
           # releases move. When that happens the next step fails on purpose - update
           # tools.lock.json in a tested commit to pick up new tool versions.

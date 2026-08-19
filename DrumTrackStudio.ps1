@@ -117,6 +117,7 @@ $PipelineScript = {
         Set-Status 'Downloading audio from YouTube...'
         $pathFile = Join-Path $env:TEMP ('dts_path_' + [guid]::NewGuid().ToString() + '.txt')
         $r = Invoke-Tool (Join-Path $Cfg.BinDir 'yt-dlp.exe') @(
+            '-v',
             '-f','bestaudio','--extract-audio','--audio-format','wav','--audio-quality','0','--no-playlist',
             '--postprocessor-args','ffmpeg:-ar 44100',
             '--ffmpeg-location',$Cfg.BinDir,

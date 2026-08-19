@@ -40,6 +40,7 @@ Source: "LICENSE";             DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\yt-dlp.exe";      DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "bin\ffmpeg.exe";      DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "bin\ffprobe.exe";     DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "bin\deno.exe";        DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "runtime\*";           DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
