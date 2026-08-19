@@ -15,9 +15,9 @@
       "source": "https://www.gyan.dev/ffmpeg/builds/"
     },
     "deno.exe": {
-      "sha256": "bf303587cfc4c8e986a34e9f8a63002d0076f1ab83ef2782babad22d0e1253ae",
+      "sha256": "98f8c2a2d470e4ccb04c935c86ff8050817d877762aec5eaeeb9e409ccb3b9fd",
       "source": "https://github.com/denoland/deno/releases",
-      "_note": "REQUIRED, not optional - yt-dlp shells out to this as its JS runtime to pass YouTube's anti-bot/signature challenge. Without it, downloads fail with HTTP 403. Not referenced by name anywhere in our own scripts, which is exactly why it got dropped once already - don't repeat that mistake."
+      "_note": "REQUIRED, not optional - yt-dlp shells out to this as its JS runtime to pass YouTube's anti-bot/signature challenge. Without it, downloads fail with HTTP 403. Not referenced by name anywhere in our own scripts, which is exactly why it got dropped once already - don't repeat that mistake. (Re-pinned 2026-08-18 to match current upstream 'latest' - the original pin was from a June-vintage vendored copy that had since drifted from what Setup.ps1/CI actually fetch.)"
     }
   }
 }
