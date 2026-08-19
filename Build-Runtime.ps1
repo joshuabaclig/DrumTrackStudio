@@ -76,6 +76,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Package installation failed.' }
 & $PyExe -c "import demucs.separate; print('demucs OK')"
 if ($LASTEXITCODE -ne 0) { throw 'Runtime smoke test failed - demucs not importable.' }
 
+# smoke test: librosa importable? (BPM/key detection, tools\detect_features.py)
+& $PyExe -c "import librosa; print('librosa OK')"
+if ($LASTEXITCODE -ne 0) { throw 'Runtime smoke test failed - librosa not importable.' }
+
 Write-Host ''
 Write-Host "Runtime ready at: $RuntimeDir" -ForegroundColor Green
 Write-Host 'Next: Build-Exe.ps1, then Build-Installer.ps1.'

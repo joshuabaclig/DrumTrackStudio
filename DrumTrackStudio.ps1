@@ -1,18 +1,20 @@
-# Drum Track Studio v1.2.0
+# Drum Track Studio v1.2.1
 # Single-file WinForms app. The download/separation pipeline runs IN-PROCESS in a
 # background PowerShell runspace (no child powershell.exe, no -ExecutionPolicy Bypass,
 # no hidden shells) - external tools (yt-dlp/ffmpeg/python) are launched with
 # CreateNoWindow so no console ever appears.
 #
-# v1.2.0: Settings tab (format / sample rate / output dir, persisted to
-# %APPDATA%\DrumTrackStudio\settings.json), live progress bar, clickable update
-# notice, modernized flat styling.
+# Stem mixer - full demucs separation (htdemucs 4-stem or htdemucs_6s 6-stem) with
+# user-selected stems to remove, Karaoke/Drumless kept as one-click presets;
+# practice-speed exports (ffmpeg atempo, pitch preserved); BPM & key detection plus
+# optional click-track export (librosa via the bundled runtime, tools\detect_features.py).
+# All new options persist in settings.json.
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-$AppVersion = '1.2.0'
+$AppVersion = '1.2.1'
 $RepoSlug   = 'joshuabaclig/DrumTrackStudio'
 
 # ---------------------------------------------------------------- paths -----
@@ -27,6 +29,7 @@ $PythonExe = Join-Path $Root 'runtime\python.exe'
 if (-not (Test-Path -LiteralPath $PythonExe)) {
     $PythonExe = Join-Path $Root 'env\Scripts\python.exe'
 }
+$FeatScript = Join-Path $Root 'tools\detect_features.py'
 
 $OutBase          = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'DrumTrackStudio'
 $DefaultDlDir     = Join-Path $OutBase 'Downloads'
@@ -50,9 +53,20 @@ $RateDisplay = [ordered]@{
     '22050'                       = '22050'
     'Keep source (no resampling)' = 'source'
 }
+$ModelDisplay = [ordered]@{
+    'htdemucs (4 stems - vocals/drums/bass/other)'                        = 'htdemucs'
+    'htdemucs_6s (6 stems - adds guitar/piano; ~350 MB on first use)'     = 'htdemucs_6s'
+}
+$ModelStems = @{
+    'htdemucs'    = @('vocals','drums','bass','other')
+    'htdemucs_6s' = @('vocals','drums','bass','other','guitar','piano')
+}
+$AllStems     = @('vocals','drums','bass','other','guitar','piano')
+$SpeedChoices = @('90','75','60','50')
 
 function Get-DefaultSettings {
-    @{ Format = 'wav'; SampleRate = '44100'; OutputDir = $DefaultDlDir; StemsDir = $DefaultStemsDir }
+    @{ Format = 'wav'; SampleRate = '44100'; OutputDir = $DefaultDlDir; StemsDir = $DefaultStemsDir
+       Model = 'htdemucs'; PracticeSpeeds = @(); ClickTrack = $false; CustomRemove = @('vocals') }
 }
 function Load-Settings {
     $s = Get-DefaultSettings
@@ -63,6 +77,15 @@ function Load-Settings {
             if ($j.SampleRate -and (@('44100','48000','22050','source') -contains [string]$j.SampleRate)) { $s.SampleRate = [string]$j.SampleRate }
             if ($j.OutputDir -and -not [string]::IsNullOrWhiteSpace([string]$j.OutputDir)) { $s.OutputDir = [string]$j.OutputDir }
             if ($j.StemsDir -and -not [string]::IsNullOrWhiteSpace([string]$j.StemsDir)) { $s.StemsDir = [string]$j.StemsDir }
+            if ($j.Model -and $ModelStems.ContainsKey([string]$j.Model)) { $s.Model = [string]$j.Model }
+            if ($null -ne $j.PracticeSpeeds) {
+                $s.PracticeSpeeds = @(@($j.PracticeSpeeds) | ForEach-Object { [string]$_ } | Where-Object { $SpeedChoices -contains $_ })
+            }
+            if ($null -ne $j.ClickTrack) { $s.ClickTrack = [bool]$j.ClickTrack }
+            if ($null -ne $j.CustomRemove) {
+                $cr = @(@($j.CustomRemove) | ForEach-Object { [string]$_ } | Where-Object { $AllStems -contains $_ })
+                if ($cr.Count -gt 0) { $s.CustomRemove = $cr }
+            }
         }
     } catch { $s = Get-DefaultSettings }   # corrupted file -> defaults, never fatal
     return $s
@@ -70,7 +93,10 @@ function Load-Settings {
 function Save-Settings {
     try {
         if (-not (Test-Path -LiteralPath $SettingsDir)) { New-Item -ItemType Directory -Force -Path $SettingsDir | Out-Null }
-        @{ Format = $script:Settings.Format; SampleRate = $script:Settings.SampleRate; OutputDir = $script:Settings.OutputDir; StemsDir = $script:Settings.StemsDir } |
+        @{ Format = $script:Settings.Format; SampleRate = $script:Settings.SampleRate
+           OutputDir = $script:Settings.OutputDir; StemsDir = $script:Settings.StemsDir
+           Model = $script:Settings.Model; PracticeSpeeds = @($script:Settings.PracticeSpeeds)
+           ClickTrack = [bool]$script:Settings.ClickTrack; CustomRemove = @($script:Settings.CustomRemove) } |
             ConvertTo-Json | Set-Content -LiteralPath $SettingsFile -Encoding UTF8
         $lblSaved.Text = 'Settings saved.'
         $savedTimer.Stop(); $savedTimer.Start()
@@ -90,6 +116,7 @@ $Sync = [hashtable]::Synchronized(@{
     Status = ''; Done = $false; Success = $false; OutFile = ''; ErrorMsg = ''
     CurrentProcId = 0
     Progress = 0; ProgressMode = 'none'    # 'none' | 'percent' | 'marquee'
+    Bpm = 0.0; Key = ''
 })
 $script:PipelinePS = $null
 
@@ -206,9 +233,41 @@ $PipelineScript = {
         if ($r.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $dest)) { Fail "Conversion to $Format failed." }
         return $dest
     }
+    # BPM/key detection (+ optional click track) via the bundled Python runtime.
+    # NON-FATAL by design: any failure is logged and swallowed - never calls Fail.
+    function Get-AudioFeatures([string]$Path, [string]$ClickOut) {
+        try {
+            $fArgs = @($Cfg.FeatScript, $Path)
+            if ($ClickOut) { $fArgs += @('--click-track', $ClickOut) }
+            $r = Invoke-Tool $Cfg.PythonExe $fArgs $null
+            if ($r.ExitCode -ne 0) { Write-Log 'Feature detection exited nonzero (non-fatal).'; return }
+            $line = ($r.StdOut -split "`r?`n" | Where-Object { $_ -match '^\s*\{.*"bpm".*\}\s*$' } | Select-Object -First 1)
+            if ($line) {
+                $j = $line | ConvertFrom-Json
+                if ($j.bpm) { $Sync.Bpm = [double]$j.bpm }
+                if ($j.key) { $Sync.Key = [string]$j.key }
+                Write-Log ("Detected: {0} BPM, {1}" -f $Sync.Bpm, $Sync.Key)
+            }
+        } catch { Write-Log "Feature detection failed (non-fatal): $($_.Exception.Message)" }
+    }
+    # Slowed-down practice copies of the final file (atempo preserves pitch).
+    # Non-fatal: a failed export is logged but never fails the run.
+    function Export-PracticeSpeeds([string]$FinalPath) {
+        $rateMap = @{ '90'='0.9'; '75'='0.75'; '60'='0.6'; '50'='0.5' }   # literals: locale-proof
+        foreach ($sp in @($Cfg.PracticeSpeeds)) {
+            if (-not $rateMap.ContainsKey([string]$sp)) { continue }
+            Set-Status "Exporting $sp% practice copy..."
+            $dir  = [System.IO.Path]::GetDirectoryName($FinalPath)
+            $base = [System.IO.Path]::GetFileNameWithoutExtension($FinalPath)
+            $ext  = [System.IO.Path]::GetExtension($FinalPath)
+            $out  = Join-Path $dir ("{0} - {1}%{2}" -f $base, $sp, $ext)
+            $r = Invoke-Tool (Join-Path $Cfg.BinDir 'ffmpeg.exe') @('-y','-i',$FinalPath,'-filter:a',('atempo=' + $rateMap[[string]$sp]),$out) $null
+            if ($r.ExitCode -ne 0) { Write-Log "Practice-speed export $sp% failed (non-fatal)." }
+        }
+    }
 
     try {
-        Write-Log "=== pipeline start (v$($Cfg.AppVersion)) URL=$($Cfg.Url) Mode=$($Cfg.Mode) Format=$($Cfg.Format) Rate=$($Cfg.SampleRate) ==="
+        Write-Log "=== pipeline start (v$($Cfg.AppVersion)) URL=$($Cfg.Url) Mode=$($Cfg.Mode) Model=$($Cfg.Model) Remove=$($Cfg.Remove -join ',') Format=$($Cfg.Format) Rate=$($Cfg.SampleRate) ==="
 
         # ---------- 1. Download ----------
         Set-Status 'Downloading audio from YouTube...'
@@ -235,39 +294,68 @@ $PipelineScript = {
         Write-Log "Saved: $file"
         $Sync.Progress = 100
         Ensure-Rate $file $Cfg.SampleRate
+        $title = [System.IO.Path]::GetFileNameWithoutExtension($file)
+
+        # ---------- 2. Analyze BPM/key on the source audio (before separation) ----------
+        if ((Test-Path -LiteralPath $Cfg.PythonExe) -and (Test-Path -LiteralPath $Cfg.FeatScript)) {
+            Set-Status 'Analyzing BPM and key...'
+            $Sync.ProgressMode = 'marquee'
+            $click = $null
+            if ($Cfg.ClickTrack) { $click = Join-Path $Cfg.DownloadsDir ($title + ' - Click Track.wav') }
+            Get-AudioFeatures $file $click
+        }
 
         if ($Cfg.Mode -eq 'audio') {
+            Export-PracticeSpeeds $file
             $Sync.OutFile = $file; $Sync.Success = $true; $Sync.Done = $true
             Write-Log '=== pipeline done (audio) ==='
             return
         }
 
-        # ---------- 2. Separate (Demucs always outputs WAV stems) ----------
-        $twoStem = if ($Cfg.Mode -eq 'karaoke') { 'vocals' } else { 'drums' }
-        $stemOut = if ($Cfg.Mode -eq 'karaoke') { 'no_vocals.wav' } else { 'no_drums.wav' }
-        $suffix  = if ($Cfg.Mode -eq 'karaoke') { 'Karaoke' } else { 'Drumless' }
-
-        Set-Status 'Separating stems with AI... this can take several minutes (first run also downloads the model, ~300 MB)'
+        # ---------- 3. Separate (full separation; demucs outputs one WAV per stem) ----------
+        Set-Status 'Separating stems with AI... this can take several minutes (first run also downloads the model)'
         $Sync.ProgressMode = 'marquee'
-        $r = Invoke-Tool $Cfg.PythonExe @('-m','demucs','-o',$Cfg.StemsDir,'--two-stems',$twoStem,$file) $null
+        $r = Invoke-Tool $Cfg.PythonExe @('-m','demucs','-n',$Cfg.Model,'-o',$Cfg.StemsDir,$file) $null
         if ($r.ExitCode -ne 0) { Fail 'Stem separation failed. See log for details.' }
 
-        $title    = [System.IO.Path]::GetFileNameWithoutExtension($file)
-        $stemFile = Join-Path (Join-Path (Join-Path $Cfg.StemsDir 'htdemucs') $title) $stemOut
-        if (-not (Test-Path -LiteralPath $stemFile)) { Fail "Expected stem output not found: $stemFile" }
+        $stemDir = Join-Path (Join-Path $Cfg.StemsDir $Cfg.Model) $title
+        $avail = if ($Cfg.Model -eq 'htdemucs_6s') { @('vocals','drums','bass','other','guitar','piano') }
+                 else { @('vocals','drums','bass','other') }
+        $keep = @($avail | Where-Object { $Cfg.Remove -notcontains $_ })
+        foreach ($k in $keep) {
+            if (-not (Test-Path -LiteralPath (Join-Path $stemDir "$k.wav"))) { Fail "Expected stem output not found: $k.wav" }
+        }
+
+        # ---------- 4. Mix the kept stems ----------
+        if ($keep.Count -eq 1) {
+            # single stem: no mixdown needed (also avoids any amix level surprises)
+            $stemFile = Join-Path $stemDir ($keep[0] + '.wav')
+        } else {
+            Set-Status 'Mixing stems...'
+            $stemFile = Join-Path $stemDir 'dts_mix.wav'
+            $mixArgs = @('-y')
+            foreach ($k in $keep) { $mixArgs += @('-i', (Join-Path $stemDir "$k.wav")) }
+            $mixArgs += @('-filter_complex',
+                ("amix=inputs={0}:duration=longest:dropout_transition=0:normalize=0" -f $keep.Count),
+                '-ac','2', $stemFile)
+            $r = Invoke-Tool (Join-Path $Cfg.BinDir 'ffmpeg.exe') $mixArgs $null
+            if ($r.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $stemFile)) { Fail 'Mixing stems failed.' }
+        }
         Ensure-Rate $stemFile $Cfg.SampleRate
 
-        # ---------- 3. Deliver in the configured format with a unique name ----------
+        # ---------- 5. Deliver in the configured format with a unique name ----------
         Set-Status 'Finalizing...'
-        $destNoExt = Join-Path $Cfg.DownloadsDir ($title + ' - ' + $suffix)
+        $destNoExt = Join-Path $Cfg.DownloadsDir ($title + ' - ' + $Cfg.Suffix)
         if ($Cfg.Format -eq 'wav' -or $Cfg.Format -eq 'best') {
-            # Demucs stems are WAV already; 'best' has no meaning for stems - keep WAV.
+            # Stems are WAV already; 'best' has no meaning for stems - keep WAV.
             $dest = $destNoExt + '.wav'
             Copy-Item -LiteralPath $stemFile -Destination $dest -Force
             if (-not (Test-Path -LiteralPath $dest)) { Fail 'Could not copy final file to the output folder.' }
         } else {
             $dest = Convert-Stem $stemFile $destNoExt $Cfg.Format $Cfg.SampleRate
         }
+
+        Export-PracticeSpeeds $dest
 
         $Sync.OutFile = $dest; $Sync.Success = $true; $Sync.Done = $true
         Write-Log "=== pipeline done: $dest ==="
@@ -310,7 +398,7 @@ function Style-FlatButton($btn, [bool]$Primary = $false) {
 # ---------------------------------------------------------------- GUI -----
 $form = New-Object Windows.Forms.Form
 $form.Text = "Drum Track Studio  v$AppVersion"
-$form.ClientSize = New-Object Drawing.Size(560, 470)
+$form.ClientSize = New-Object Drawing.Size(560, 502)
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 $form.StartPosition = 'CenterScreen'
@@ -320,7 +408,7 @@ $form.Font = $FontBase
 
 $tabs = New-Object Windows.Forms.TabControl
 $tabs.Location = New-Object Drawing.Point(8, 8)
-$tabs.Size = New-Object Drawing.Size(544, 454)
+$tabs.Size = New-Object Drawing.Size(544, 486)
 $form.Controls.Add($tabs)
 
 $tabDl = New-Object Windows.Forms.TabPage
@@ -369,27 +457,59 @@ $tabDl.Controls.Add($btnPaste)
 $grp = New-Object Windows.Forms.GroupBox
 $grp.Text = 'What do you want?'
 $grp.Location = New-Object Drawing.Point(20, 82)
-$grp.Size = New-Object Drawing.Size(500, 118)
+$grp.Size = New-Object Drawing.Size(500, 192)
 $grp.ForeColor = $ColText
 $tabDl.Controls.Add($grp)
 
 $r1 = New-Object Windows.Forms.RadioButton
 $r1.Text = 'Audio Only  (download, no separation)'
-$r1.Location = New-Object Drawing.Point(18, 26); $r1.AutoSize = $true; $r1.Checked = $true
+$r1.Location = New-Object Drawing.Point(18, 24); $r1.AutoSize = $true; $r1.Checked = $true
 $grp.Controls.Add($r1)
 
 $r2 = New-Object Windows.Forms.RadioButton
 $r2.Text = 'Vocal Karaoke  (vocals removed - instrumental backing track)'
-$r2.Location = New-Object Drawing.Point(18, 54); $r2.AutoSize = $true
+$r2.Location = New-Object Drawing.Point(18, 50); $r2.AutoSize = $true
 $grp.Controls.Add($r2)
 
 $r3 = New-Object Windows.Forms.RadioButton
 $r3.Text = 'Drumless  (drums removed - play along on your kit)'
-$r3.Location = New-Object Drawing.Point(18, 82); $r3.AutoSize = $true
+$r3.Location = New-Object Drawing.Point(18, 76); $r3.AutoSize = $true
 $grp.Controls.Add($r3)
 
+$r4 = New-Object Windows.Forms.RadioButton
+$r4.Text = 'Custom mix  (choose which stems to remove)'
+$r4.Location = New-Object Drawing.Point(18, 102); $r4.AutoSize = $true
+$grp.Controls.Add($r4)
+
+$StemChecks = @{}
+for ($i = 0; $i -lt $AllStems.Count; $i++) {
+    $stem = $AllStems[$i]
+    $cb = New-Object Windows.Forms.CheckBox
+    $cb.Text = $stem
+    $cbX = 36 + ($i % 3) * 160
+    $cbY = 130 + [int][Math]::Floor($i / 3) * 26
+    $cb.Location = New-Object Drawing.Point($cbX, $cbY)
+    $cb.AutoSize = $true
+    $cb.Checked = ($script:Settings.CustomRemove -contains $stem)
+    $cb.Add_CheckedChanged({
+        $script:Settings.CustomRemove = @($AllStems | Where-Object { $StemChecks[$_].Checked })
+        Save-Settings
+    })
+    $grp.Controls.Add($cb)
+    $StemChecks[$stem] = $cb
+}
+
+function Update-StemChecks {
+    $avail = $ModelStems[$script:Settings.Model]
+    foreach ($stem in $AllStems) {
+        $StemChecks[$stem].Enabled = ($r4.Checked -and ($avail -contains $stem))
+    }
+}
+$r4.Add_CheckedChanged({ Update-StemChecks })
+Update-StemChecks
+
 $bar = New-Object Windows.Forms.ProgressBar
-$bar.Location = New-Object Drawing.Point(20, 214)
+$bar.Location = New-Object Drawing.Point(20, 288)
 $bar.Size = New-Object Drawing.Size(500, 14)
 $bar.Style = 'Continuous'
 $bar.Minimum = 0; $bar.Maximum = 100; $bar.Value = 0
@@ -398,7 +518,7 @@ $tabDl.Controls.Add($bar)
 
 $lblStatus = New-Object Windows.Forms.Label
 $lblStatus.Text = 'Ready.'
-$lblStatus.Location = New-Object Drawing.Point(20, 236)
+$lblStatus.Location = New-Object Drawing.Point(20, 310)
 $lblStatus.Size = New-Object Drawing.Size(500, 34)
 $lblStatus.ForeColor = $ColSubtle
 $lblStatus.Font = $FontSmall
@@ -406,7 +526,7 @@ $tabDl.Controls.Add($lblStatus)
 
 $btnGo = New-Object Windows.Forms.Button
 $btnGo.Text = 'Download'
-$btnGo.Location = New-Object Drawing.Point(20, 276)
+$btnGo.Location = New-Object Drawing.Point(20, 350)
 $btnGo.Size = New-Object Drawing.Size(500, 42)
 $btnGo.Font = $FontBold
 Style-FlatButton $btnGo $true
@@ -414,7 +534,7 @@ $tabDl.Controls.Add($btnGo)
 
 $btnDl = New-Object Windows.Forms.Button
 $btnDl.Text = 'Open output folder'
-$btnDl.Location = New-Object Drawing.Point(20, 332)
+$btnDl.Location = New-Object Drawing.Point(20, 406)
 $btnDl.Size = New-Object Drawing.Size(160, 32)
 $btnDl.Add_Click({
     if (-not (Test-Path -LiteralPath $script:Settings.OutputDir)) {
@@ -427,7 +547,7 @@ $tabDl.Controls.Add($btnDl)
 
 $btnSt = New-Object Windows.Forms.Button
 $btnSt.Text = 'Open Stems folder'
-$btnSt.Location = New-Object Drawing.Point(190, 332)
+$btnSt.Location = New-Object Drawing.Point(190, 406)
 $btnSt.Size = New-Object Drawing.Size(160, 32)
 $btnSt.Add_Click({
     if (-not (Test-Path -LiteralPath $script:Settings.StemsDir)) {
@@ -440,7 +560,7 @@ $tabDl.Controls.Add($btnSt)
 
 $btnLog = New-Object Windows.Forms.Button
 $btnLog.Text = 'Open logs'
-$btnLog.Location = New-Object Drawing.Point(360, 332)
+$btnLog.Location = New-Object Drawing.Point(360, 406)
 $btnLog.Size = New-Object Drawing.Size(160, 32)
 $btnLog.Add_Click({ Start-Process explorer.exe $LogDir })
 Style-FlatButton $btnLog
@@ -462,7 +582,7 @@ $cmbFormat.SelectedItem = $script:Settings.Format
 $tabSet.Controls.Add($cmbFormat)
 
 $lblFmtNote = New-Object Windows.Forms.Label
-$lblFmtNote.Text = 'Applies to all modes. Karaoke/Drumless are separated as WAV first, then converted, so non-WAV formats take a little longer. ("best" = keep whatever YouTube serves; Karaoke/Drumless stay WAV.)'
+$lblFmtNote.Text = 'Applies to all modes. Karaoke/Drumless/Custom are separated as WAV first, then converted, so non-WAV formats take a little longer. ("best" = keep whatever YouTube serves; separated mixes stay WAV.)'
 $lblFmtNote.Location = New-Object Drawing.Point(20, 56)
 $lblFmtNote.Size = New-Object Drawing.Size(500, 34)
 $lblFmtNote.ForeColor = $ColSubtle
@@ -484,14 +604,38 @@ $cmbRate.SelectedItem = ($RateDisplay.Keys | Where-Object { $RateDisplay[$_] -eq
 if (-not $cmbRate.SelectedItem) { $cmbRate.SelectedIndex = 0 }
 $tabSet.Controls.Add($cmbRate)
 
+$lblModel = New-Object Windows.Forms.Label
+$lblModel.Text = 'Separation model:'
+$lblModel.Location = New-Object Drawing.Point(20, 146)
+$lblModel.AutoSize = $true
+$tabSet.Controls.Add($lblModel)
+
+$cmbModel = New-Object Windows.Forms.ComboBox
+$cmbModel.DropDownStyle = 'DropDownList'
+$cmbModel.Location = New-Object Drawing.Point(220, 142)
+$cmbModel.Size = New-Object Drawing.Size(300, 26)
+$cmbModel.DropDownWidth = 460
+foreach ($k in $ModelDisplay.Keys) { [void]$cmbModel.Items.Add($k) }
+$cmbModel.SelectedItem = ($ModelDisplay.Keys | Where-Object { $ModelDisplay[$_] -eq $script:Settings.Model } | Select-Object -First 1)
+if (-not $cmbModel.SelectedItem) { $cmbModel.SelectedIndex = 0 }
+$tabSet.Controls.Add($cmbModel)
+
+$lblModelNote = New-Object Windows.Forms.Label
+$lblModelNote.Text = 'htdemucs_6s adds guitar and piano stems for Custom mix; the first run with it downloads an extra ~350 MB model.'
+$lblModelNote.Location = New-Object Drawing.Point(20, 176)
+$lblModelNote.Size = New-Object Drawing.Size(500, 30)
+$lblModelNote.ForeColor = $ColSubtle
+$lblModelNote.Font = $FontSmall
+$tabSet.Controls.Add($lblModelNote)
+
 $lblDir = New-Object Windows.Forms.Label
 $lblDir.Text = 'Output folder (final tracks):'
-$lblDir.Location = New-Object Drawing.Point(20, 150)
+$lblDir.Location = New-Object Drawing.Point(20, 214)
 $lblDir.AutoSize = $true
 $tabSet.Controls.Add($lblDir)
 
 $txtDir = New-Object Windows.Forms.TextBox
-$txtDir.Location = New-Object Drawing.Point(20, 176)
+$txtDir.Location = New-Object Drawing.Point(20, 240)
 $txtDir.Size = New-Object Drawing.Size(400, 26)
 $txtDir.ReadOnly = $true
 $txtDir.Text = $script:Settings.OutputDir
@@ -499,7 +643,7 @@ $tabSet.Controls.Add($txtDir)
 
 $btnBrowse = New-Object Windows.Forms.Button
 $btnBrowse.Text = 'Browse...'
-$btnBrowse.Location = New-Object Drawing.Point(432, 174)
+$btnBrowse.Location = New-Object Drawing.Point(432, 238)
 $btnBrowse.Size = New-Object Drawing.Size(88, 28)
 Style-FlatButton $btnBrowse
 $btnBrowse.Add_Click({
@@ -517,12 +661,12 @@ $tabSet.Controls.Add($btnBrowse)
 
 $lblStemDir = New-Object Windows.Forms.Label
 $lblStemDir.Text = 'Stems folder (raw separation output):'
-$lblStemDir.Location = New-Object Drawing.Point(20, 216)
+$lblStemDir.Location = New-Object Drawing.Point(20, 278)
 $lblStemDir.AutoSize = $true
 $tabSet.Controls.Add($lblStemDir)
 
 $txtStemDir = New-Object Windows.Forms.TextBox
-$txtStemDir.Location = New-Object Drawing.Point(20, 242)
+$txtStemDir.Location = New-Object Drawing.Point(20, 304)
 $txtStemDir.Size = New-Object Drawing.Size(400, 26)
 $txtStemDir.ReadOnly = $true
 $txtStemDir.Text = $script:Settings.StemsDir
@@ -530,7 +674,7 @@ $tabSet.Controls.Add($txtStemDir)
 
 $btnStemBrowse = New-Object Windows.Forms.Button
 $btnStemBrowse.Text = 'Browse...'
-$btnStemBrowse.Location = New-Object Drawing.Point(432, 240)
+$btnStemBrowse.Location = New-Object Drawing.Point(432, 302)
 $btnStemBrowse.Size = New-Object Drawing.Size(88, 28)
 Style-FlatButton $btnStemBrowse
 $btnStemBrowse.Add_Click({
@@ -546,9 +690,43 @@ $btnStemBrowse.Add_Click({
 })
 $tabSet.Controls.Add($btnStemBrowse)
 
+$lblSpeeds = New-Object Windows.Forms.Label
+$lblSpeeds.Text = 'Also export practice-speed copies (slower, same pitch):'
+$lblSpeeds.Location = New-Object Drawing.Point(20, 344)
+$lblSpeeds.AutoSize = $true
+$tabSet.Controls.Add($lblSpeeds)
+
+$SpeedChecks = @{}
+for ($i = 0; $i -lt $SpeedChoices.Count; $i++) {
+    $sp = $SpeedChoices[$i]
+    $cb = New-Object Windows.Forms.CheckBox
+    $cb.Text = "$sp%"
+    $cbX = 24 + $i * 100
+    $cb.Location = New-Object Drawing.Point($cbX, 370)
+    $cb.AutoSize = $true
+    $cb.Checked = ($script:Settings.PracticeSpeeds -contains $sp)
+    $cb.Add_CheckedChanged({
+        $script:Settings.PracticeSpeeds = @($SpeedChoices | Where-Object { $SpeedChecks[$_].Checked })
+        Save-Settings
+    })
+    $tabSet.Controls.Add($cb)
+    $SpeedChecks[$sp] = $cb
+}
+
+$chkClick = New-Object Windows.Forms.CheckBox
+$chkClick.Text = 'Also export a click track at the detected BPM'
+$chkClick.Location = New-Object Drawing.Point(20, 400)
+$chkClick.AutoSize = $true
+$chkClick.Checked = [bool]$script:Settings.ClickTrack
+$chkClick.Add_CheckedChanged({
+    $script:Settings.ClickTrack = $chkClick.Checked
+    Save-Settings
+})
+$tabSet.Controls.Add($chkClick)
+
 $lblSaved = New-Object Windows.Forms.Label
 $lblSaved.Text = ''
-$lblSaved.Location = New-Object Drawing.Point(20, 284)
+$lblSaved.Location = New-Object Drawing.Point(20, 430)
 $lblSaved.Size = New-Object Drawing.Size(500, 18)
 $lblSaved.ForeColor = $ColAccent
 $lblSaved.Font = $FontSmall
@@ -565,6 +743,11 @@ $cmbFormat.Add_SelectedIndexChanged({
 $cmbRate.Add_SelectedIndexChanged({
     $script:Settings.SampleRate = $RateDisplay[[string]$cmbRate.SelectedItem]
     Save-Settings
+})
+$cmbModel.Add_SelectedIndexChanged({
+    $script:Settings.Model = $ModelDisplay[[string]$cmbModel.SelectedItem]
+    Save-Settings
+    Update-StemChecks
 })
 
 # ------------------------------------------------------------- run logic -----
@@ -606,7 +789,12 @@ $timer.Add_Tick({
     if ($Sync.Success) {
         $outFile = $Sync.OutFile
         $lblStatus.Text = 'Ready.'
-        [Windows.Forms.MessageBox]::Show("Finished!`n`nSaved to:`n$outFile", 'Drum Track Studio',
+        $extra = ''
+        if ($Sync.Bpm -gt 0) {
+            $keyPart = if ($Sync.Key) { ', ' + $Sync.Key } else { '' }
+            $extra = "`n`nDetected: $([Math]::Round([double]$Sync.Bpm)) BPM$keyPart (from source audio)"
+        }
+        [Windows.Forms.MessageBox]::Show("Finished!`n`nSaved to:`n$outFile$extra", 'Drum Track Studio',
             [Windows.Forms.MessageBoxButtons]::OK, [Windows.Forms.MessageBoxIcon]::Information) | Out-Null
         if (Test-Path -LiteralPath $outFile) {
             Start-Process explorer.exe "/select,`"$outFile`""
@@ -632,9 +820,28 @@ $btnGo.Add_Click({
             'Drum Track Studio', 'OK', 'Error') | Out-Null
         return
     }
-    $mode = 'audio'
-    if ($r2.Checked) { $mode = 'karaoke' }
-    elseif ($r3.Checked) { $mode = 'drumless' }
+
+    # mode + stems to remove (presets go through the exact same path as Custom mix)
+    $mode = 'audio'; $remove = @(); $suffix = ''
+    if ($r2.Checked) {
+        $mode = 'mix'; $remove = @('vocals'); $suffix = 'Karaoke'
+    } elseif ($r3.Checked) {
+        $mode = 'mix'; $remove = @('drums'); $suffix = 'Drumless'
+    } elseif ($r4.Checked) {
+        $mode = 'mix'
+        $avail = $ModelStems[$script:Settings.Model]
+        $remove = @($AllStems | Where-Object { $StemChecks[$_].Checked -and ($avail -contains $_) })
+        if ($remove.Count -eq 0) {
+            [Windows.Forms.MessageBox]::Show('Pick at least one stem to remove for a custom mix.', 'Drum Track Studio') | Out-Null
+            return
+        }
+        if ($remove.Count -ge $avail.Count) {
+            [Windows.Forms.MessageBox]::Show('You can''t remove every stem - nothing would be left in the mix.', 'Drum Track Studio') | Out-Null
+            return
+        }
+        $suffix = ($remove | ForEach-Object { 'No ' + $_.Substring(0,1).ToUpper() + $_.Substring(1) }) -join ', '
+    }
+
     if ($mode -ne 'audio' -and -not (Test-Path -LiteralPath $PythonExe)) {
         [Windows.Forms.MessageBox]::Show('The bundled audio engine (runtime\python.exe) was not found. Reinstall the app.',
             'Drum Track Studio', 'OK', 'Error') | Out-Null
@@ -653,12 +860,15 @@ $btnGo.Add_Click({
     $Sync.Status = 'Starting...'; $Sync.Done = $false; $Sync.Success = $false
     $Sync.OutFile = ''; $Sync.ErrorMsg = ''; $Sync.CurrentProcId = 0
     $Sync.Progress = 0; $Sync.ProgressMode = 'none'
+    $Sync.Bpm = 0.0; $Sync.Key = ''
 
     $cfg = @{
         Url = $url; Mode = $mode; AppVersion = $AppVersion
-        BinDir = $BinDir; PythonExe = $PythonExe
+        BinDir = $BinDir; PythonExe = $PythonExe; FeatScript = $FeatScript
         DownloadsDir = $script:Settings.OutputDir; StemsDir = $script:Settings.StemsDir; LogFile = $LogFile
         Format = $script:Settings.Format; SampleRate = $script:Settings.SampleRate
+        Model = $script:Settings.Model; Remove = $remove; Suffix = $suffix
+        PracticeSpeeds = @($script:Settings.PracticeSpeeds); ClickTrack = [bool]$script:Settings.ClickTrack
     }
 
     $btnGo.Enabled = $false

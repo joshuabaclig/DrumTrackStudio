@@ -2,14 +2,14 @@
 # Order: Build-Runtime.ps1 -> Build-Exe.ps1 -> Build-Installer.ps1
 # Requires Inno Setup 6 (https://jrsoftware.org/isinfo.php or `choco install innosetup`).
 param(
-    [string]$Version = '1.2.0',
+    [string]$Version = '1.2.1',
     [string]$CertThumbprint = $env:DTS_CERT_THUMBPRINT,
     [string]$TimestampUrl = 'http://timestamp.digicert.com'
 )
 $ErrorActionPreference = 'Stop'
 $Root = $PSScriptRoot
 
-foreach ($req in @('DrumTrackStudio.exe', 'runtime\python.exe', 'bin\yt-dlp.exe', 'bin\ffmpeg.exe', 'bin\ffprobe.exe')) {
+foreach ($req in @('DrumTrackStudio.exe', 'runtime\python.exe', 'bin\yt-dlp.exe', 'bin\ffmpeg.exe', 'bin\ffprobe.exe', 'tools\detect_features.py')) {
     if (-not (Test-Path -LiteralPath (Join-Path $Root $req))) {
         throw "Missing $req - run Build-Runtime.ps1 and Build-Exe.ps1 first."
     }

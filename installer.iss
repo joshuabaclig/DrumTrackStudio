@@ -5,7 +5,7 @@
 #define MyAppName "Drum Track Studio"
 ; version can be overridden from the command line: ISCC.exe /DMyAppVersion=1.2.0 installer.iss
 #ifndef MyAppVersion
-  #define MyAppVersion "1.2.0"
+  #define MyAppVersion "1.2.1"
 #endif
 #define MyAppPublisher "Drum Track Studio project"
 #define MyAppExeName "DrumTrackStudio.exe"
@@ -41,6 +41,7 @@ Source: "bin\yt-dlp.exe";      DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "bin\ffmpeg.exe";      DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "bin\ffprobe.exe";     DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "bin\deno.exe";        DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "tools\detect_features.py"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "runtime\*";           DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
