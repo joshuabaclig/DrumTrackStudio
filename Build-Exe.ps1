@@ -6,7 +6,7 @@
 #   or set env var DTS_CERT_THUMBPRINT
 #   -TimestampUrl defaults to DigiCert's public timestamp server
 param(
-    [string]$Version = '1.1.0',
+    [string]$Version = '1.2.0',
     [string]$CertThumbprint = $env:DTS_CERT_THUMBPRINT,
     [string]$TimestampUrl = 'http://timestamp.digicert.com'
 )

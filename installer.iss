@@ -5,7 +5,7 @@
 #define MyAppName "Drum Track Studio"
 ; version can be overridden from the command line: ISCC.exe /DMyAppVersion=1.2.0 installer.iss
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.0"
+  #define MyAppVersion "1.2.0"
 #endif
 #define MyAppPublisher "Drum Track Studio project"
 #define MyAppExeName "DrumTrackStudio.exe"

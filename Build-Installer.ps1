@@ -2,7 +2,7 @@
 # Order: Build-Runtime.ps1 -> Build-Exe.ps1 -> Build-Installer.ps1
 # Requires Inno Setup 6 (https://jrsoftware.org/isinfo.php or `choco install innosetup`).
 param(
-    [string]$Version = '1.1.0',
+    [string]$Version = '1.2.0',
     [string]$CertThumbprint = $env:DTS_CERT_THUMBPRINT,
     [string]$TimestampUrl = 'http://timestamp.digicert.com'
 )
