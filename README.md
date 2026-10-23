@@ -1,6 +1,6 @@
 # Drum Track Studio
 
-A small Windows desktop app that takes a YouTube link and gives you back a WAV file:
+A small desktop app for **Windows, macOS and Linux** that takes a YouTube link and gives you back a WAV file:
 the plain audio, a vocals-removed karaoke/instrumental track, or a drums-removed
 track to play along with on your kit. No terminal windows, no manual ffmpeg commands.
 
@@ -22,6 +22,8 @@ open-source source-separation model), running locally on CPU — no cloud servic
 no API key, and no Python installation needed (the installer bundles everything).
 
 ## Install
+
+### Windows
 
 Download the latest `DrumTrackStudio-Setup-<version>.exe` from the
 [Releases](../../releases) page and run it. It installs like any normal Windows app
@@ -51,17 +53,77 @@ or build it yourself from source (below).
 for [SignPath Foundation](https://signpath.io)'s free code signing for OSS, which
 would remove the warning properly.*
 
+### macOS and Linux
+
+On macOS and Linux the app runs from source: there's no installer, so there's no
+"unidentified developer" / Gatekeeper prompt either. You need:
+
+- **macOS:** an Apple Silicon Mac (M1 or newer; PyTorch no longer ships Intel-Mac
+  builds) and [Homebrew](https://brew.sh). Install the prerequisites with
+  `brew install git ffmpeg uv`.
+- **Linux:** a 64-bit distro from roughly 2022 or later (glibc 2.34+, e.g. Ubuntu
+  22.04+, Fedora 35+, Arch). Install `git`, `ffmpeg` and
+  [uv](https://docs.astral.sh/uv/) with your package manager, e.g.
+  `sudo pacman -S git ffmpeg uv` or `sudo apt install git ffmpeg` plus uv from its site.
+
+uv is optional if you already have Python 3.10-3.12 (PyTorch doesn't support newer
+Pythons yet); with uv, setup fetches Python 3.12 into the project folder for you and
+leaves your system Python alone.
+
+```bash
+git clone https://github.com/joshuabaclig/DrumTrackStudio.git
+cd DrumTrackStudio
+./setup.sh     # one time: ~1-2 GB of packages (PyTorch), plus deno into bin/
+./run.sh       # opens the app
+```
+
+Re-run `./setup.sh` after a `git pull` to pick up dependency changes.
+
+On Linux, setup also adds **Drum Track Studio to your app menu** (just for your
+user, no sudo). If you move the project folder, re-run `./setup.sh` so the menu
+entry points at the new location. To remove the entry:
+
+```bash
+rm ~/.local/share/applications/drumtrackstudio.desktop ~/.local/share/icons/hicolor/*/apps/drumtrackstudio.png
+```
+
+**Terminal mode:** pass a URL to skip the window. Options you don't give come from
+the app's saved settings:
+
+```bash
+./run.sh "https://www.youtube.com/watch?v=..." --mode drumless
+./run.sh "https://www.youtube.com/watch?v=..." --mode custom --remove vocals bass
+./run.sh --help
+```
+
 ## Where files go
 
-| What | Where |
-| --- | --- |
-| Final tracks | `Documents\DrumTrackStudio\Downloads\` |
-| Raw separation stems | `Documents\DrumTrackStudio\Stems\` |
-| Logs (for troubleshooting) | `%LOCALAPPDATA%\DrumTrackStudio\logs\` (or the "Open logs" button in the app) |
+| What | Windows | macOS | Linux |
+| --- | --- | --- | --- |
+| Final tracks | `Documents\DrumTrackStudio\Downloads\` | `~/Documents/DrumTrackStudio/Downloads/` | `~/Documents/DrumTrackStudio/Downloads/` |
+| Raw separation stems | `Documents\DrumTrackStudio\Stems\` | `~/Documents/DrumTrackStudio/Stems/` | `~/Documents/DrumTrackStudio/Stems/` |
+| Settings | `%APPDATA%\DrumTrackStudio\` | `~/Library/Application Support/DrumTrackStudio/` | `~/.config/DrumTrackStudio/` |
+| Logs | `%LOCALAPPDATA%\DrumTrackStudio\logs\` | `~/Library/Logs/DrumTrackStudio/` | `~/.local/state/DrumTrackStudio/logs/` |
+
+Both output folders can be changed in the Settings tab, and the "Open logs" button
+opens the logs folder on every OS. (On Linux, "Documents" follows your XDG user-dirs
+setting.)
 
 ## Building from source (developers)
 
-Requirements: Windows 10/11, PowerShell 5.1+, [Python 3.10+](https://www.python.org/downloads/)
+There are currently two front ends sharing the same audio engine (Demucs, librosa,
+yt-dlp, ffmpeg):
+
+- `drumtrackstudio/` - the cross-platform **Python + Qt** app. On macOS/Linux,
+  `./setup.sh` is the whole dev setup. On Windows it also runs from source: create a
+  Python 3.12 venv and `pip install` `requirements-app.lock.txt` with the same index
+  flags `setup.sh` uses, put ffmpeg/ffprobe/deno in `bin\` (`Setup.ps1` fetches them),
+  then `python -m drumtrackstudio`.
+- `DrumTrackStudio.ps1` - the original **WinForms** app, which the Windows installer
+  still ships. It stays the Windows release until the Python app has its own
+  installer.
+
+Windows installer build requirements: Windows 10/11, PowerShell 5.1+, [Python 3.10+](https://www.python.org/downloads/)
 on PATH (dev only — end users never need it), and [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 to build the installer.
 
@@ -88,7 +150,15 @@ lint (PSScriptAnalyzer), the full build chain, and checksum generation.
 ## Project layout
 
 ```
-DrumTrackStudio.ps1     the whole app: GUI + in-process pipeline (source)
+drumtrackstudio/        cross-platform Python + Qt app
+  pipeline.py           download/separate/mix pipeline (no GUI dependency)
+  gui.py                Qt window
+  cli.py                terminal front end (./run.sh <url>)
+  settings.py, paths.py settings.json + per-OS folders
+setup.sh, run.sh        macOS/Linux setup and launcher
+requirements-app.lock.txt  extra pins for the Python app (Qt, yt-dlp)
+tools/detect_features.py   BPM/key detection + click track (both apps)
+DrumTrackStudio.ps1     Windows WinForms app: GUI + in-process pipeline (source)
 Build-Runtime.ps1       builds the bundled Python runtime; verifies vendored binaries
 Build-Exe.ps1           compiles the exe (PS2EXE), optional signing, checksum
 Build-Installer.ps1     builds the Inno Setup installer
@@ -105,6 +175,8 @@ app.ico                 app icon
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — Unlicense
 - [FFmpeg](https://ffmpeg.org/) — LGPL/GPL depending on build
 - [Demucs](https://github.com/facebookresearch/demucs) — MIT
+- [Qt for Python (PySide6)](https://doc.qt.io/qtforpython/) — LGPL
+- [Deno](https://deno.com) — MIT
 - [PS2EXE](https://github.com/MScholtes/PS2EXE) — used only at build time to compile the .exe
 - [Inno Setup](https://jrsoftware.org/isinfo.php) — used only at build time to build the installer
 
