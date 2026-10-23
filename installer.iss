@@ -5,7 +5,7 @@
 #define MyAppName "Drum Track Studio"
 ; version can be overridden from the command line: ISCC.exe /DMyAppVersion=1.2.0 installer.iss
 #ifndef MyAppVersion
-  #define MyAppVersion "1.2.1"
+  #define MyAppVersion "1.3.0"
 #endif
 #define MyAppPublisher "Drum Track Studio project"
 #define MyAppExeName "DrumTrackStudio.exe"
@@ -15,7 +15,7 @@ AppId={{8B54A2C1-73D9-4E1F-9A06-44C1B8A0F52E}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-AppPublisherURL=https://github.com/YOURUSER/DrumTrackStudio
+AppPublisherURL=https://github.com/joshuabaclig/DrumTrackStudio
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
