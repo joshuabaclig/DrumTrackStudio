@@ -68,7 +68,7 @@ else
     say 'Downloading deno (~40 MB, one time)...'
     mkdir -p bin
     tmp=$(mktemp -d)
-    curl -fsSL -o "$tmp/deno.zip" "https://github.com/denoland/deno/releases/latest/download/deno-$deno_triple.zip"
+    curl -fsSL -o "$tmp/deno.zip" "https://github.com/denoland/deno/releases/download/v2.9.8/deno-$deno_triple.zip"
     env/bin/python -m zipfile -e "$tmp/deno.zip" bin/
     chmod +x bin/deno
     rm -rf "$tmp"

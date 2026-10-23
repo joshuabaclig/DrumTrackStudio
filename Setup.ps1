@@ -18,10 +18,8 @@ function Get-FileIfMissing([string]$Url, [string]$Dest) {
 }
 
 # ---------- pinned third-party binaries ----------
-# NOTE: temporarily pulling from the nightly channel instead of stable - see the
-# "_note" on yt-dlp.exe in tools.lock.json for why (YouTube broke the android_vr
-# client on stable builds; revert to the yt-dlp/yt-dlp releases URL once fixed upstream).
-Get-FileIfMissing 'https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe' `
+# Versioned urls, matching tools.lock.json - upgrade all three places together.
+Get-FileIfMissing 'https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.21/yt-dlp.exe' `
     (Join-Path $BinDir 'yt-dlp.exe')
 
 $ffmpegExe = Join-Path $BinDir 'ffmpeg.exe'
@@ -29,7 +27,7 @@ if (-not (Test-Path -LiteralPath $ffmpegExe)) {
     Write-Host 'Downloading ffmpeg (~100MB, one time)...'
     $ffZip = Join-Path $env:TEMP 'dts_ffmpeg.zip'
     $ffTmp = Join-Path $env:TEMP 'dts_ffmpeg_extract'
-    Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile $ffZip
+    Invoke-WebRequest -Uri 'https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip' -OutFile $ffZip
     Remove-Item -Recurse -Force $ffTmp -ErrorAction SilentlyContinue
     Expand-Archive -Path $ffZip -DestinationPath $ffTmp -Force
     $found = Get-ChildItem -Path $ffTmp -Recurse -Filter 'ffmpeg.exe' | Select-Object -First 1
@@ -48,7 +46,7 @@ if (-not (Test-Path -LiteralPath $denoExe)) {
     Write-Host 'Downloading deno (~40MB, one time)...'
     $denoZip = Join-Path $env:TEMP 'dts_deno.zip'
     $denoTmp = Join-Path $env:TEMP 'dts_deno_extract'
-    Invoke-WebRequest -Uri 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip' -OutFile $denoZip
+    Invoke-WebRequest -Uri 'https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-pc-windows-msvc.zip' -OutFile $denoZip
     Remove-Item -Recurse -Force $denoTmp -ErrorAction SilentlyContinue
     Expand-Archive -Path $denoZip -DestinationPath $denoTmp -Force
     $found = Get-ChildItem -Path $denoTmp -Recurse -Filter 'deno.exe' | Select-Object -First 1
@@ -59,8 +57,8 @@ if (-not (Test-Path -LiteralPath $denoExe)) {
     Write-Host 'Already have deno.exe.'
 }
 
-# verify what we have against the pinned hashes (warn-only for dev: upstream 'latest'
-# may be newer than the pin; release builds hard-fail instead via Build-Runtime.ps1)
+# verify what we have against the pinned hashes (warn-only for dev: an older bin/
+# from before a re-pin won't match; release builds hard-fail instead via Build-Runtime.ps1)
 $lock = Get-Content (Join-Path $Root 'tools.lock.json') -Raw | ConvertFrom-Json
 foreach ($tool in $lock.tools.PSObject.Properties) {
     $path = Join-Path $BinDir $tool.Name
@@ -68,7 +66,7 @@ foreach ($tool in $lock.tools.PSObject.Properties) {
         $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLower()
         if ($actual -ne $tool.Value.sha256.ToLower()) {
             Write-Host "NOTE: bin\$($tool.Name) does not match the pinned hash in tools.lock.json." -ForegroundColor Yellow
-            Write-Host '      (Upstream may have released a newer build. Test the app, then update tools.lock.json to re-pin.)'
+            Write-Host '      (Probably left over from an older pin: delete it and re-run Setup.ps1 to fetch the pinned version.)'
         }
     }
 }

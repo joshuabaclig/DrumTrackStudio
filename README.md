@@ -145,7 +145,11 @@ thumbprint (CurrentUser\My store) and the build scripts sign the exe and install
 via signtool; with no cert configured, signing is skipped cleanly.
 
 Releases are built automatically by GitHub Actions on version tags (`v*`), including
-lint (PSScriptAnalyzer), the full build chain, and checksum generation.
+lint (PSScriptAnalyzer), the full build chain, and checksum generation. Before tagging
+`vX.Y.Z`, bump the version in `DrumTrackStudio.ps1`, `drumtrackstudio/__init__.py`,
+`Build-Exe.ps1`, `Build-Installer.ps1` and `installer.iss`, and add
+`release-notes/vX.Y.Z.md`; it becomes the release description, and the build stops
+early if it's missing.
 
 ## Project layout
 

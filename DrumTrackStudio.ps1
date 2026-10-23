@@ -1,4 +1,4 @@
-# Drum Track Studio v1.2.1
+# Drum Track Studio v1.3.0
 # Single-file WinForms app. The download/separation pipeline runs IN-PROCESS in a
 # background PowerShell runspace (no child powershell.exe, no -ExecutionPolicy Bypass,
 # no hidden shells) - external tools (yt-dlp/ffmpeg/python) are launched with
@@ -14,7 +14,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-$AppVersion = '1.2.1'
+$AppVersion = '1.3.0'
 $RepoSlug   = 'joshuabaclig/DrumTrackStudio'
 
 # ---------------------------------------------------------------- paths -----
