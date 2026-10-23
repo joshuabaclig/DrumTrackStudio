@@ -3,6 +3,7 @@ env/
 
 # Third-party binaries - downloaded locally by Setup.ps1, not committed
 bin/*.exe
+bin/deno
 
 # Build outputs - produced by Build-Exe.ps1 / Build-Runtime.ps1 / Build-Installer.ps1
 DrumTrackStudio.exe
@@ -23,3 +24,6 @@ Stems/*
 *.log
 dts_status_*.txt
 dts_path_*.txt
+
+# Python bytecode
+__pycache__/

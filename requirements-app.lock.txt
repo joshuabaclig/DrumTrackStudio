@@ -1,0 +1,11 @@
+# Extra pins for the cross-platform Python app (drumtrackstudio/), on top of the
+# shared audio-engine pins. The PowerShell/WinForms build doesn't use this file.
+# Install with (setup.sh does this for you):
+#   python -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple -r requirements-app.lock.txt
+-r requirements.lock.txt
+PySide6==6.11.2
+# Stable channel again: 2026.10.21 includes the fix for yt-dlp#17456 (the android_vr
+# 403s that forced the Windows build onto a nightly pin).
+yt-dlp==2026.10.21
+# JS challenge solver scripts yt-dlp runs through deno (deno itself: see setup.sh)
+yt-dlp-ejs==0.8.0
