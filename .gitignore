@@ -7,6 +7,7 @@ bin/deno
 
 # Build outputs - produced by Build-Exe.ps1 / Build-Runtime.ps1 / Build-Installer.ps1
 DrumTrackStudio.exe
+build-tools/
 runtime/
 dist/
 checksums.txt

@@ -144,12 +144,24 @@ pushed to managed machines via Intune/GPO), set `DTS_CERT_THUMBPRINT` to its
 thumbprint (CurrentUser\My store) and the build scripts sign the exe and installer
 via signtool; with no cert configured, signing is skipped cleanly.
 
-Releases are built automatically by GitHub Actions on version tags (`v*`), including
-lint (PSScriptAnalyzer), the full build chain, and checksum generation. Before tagging
-`vX.Y.Z`, bump the version in `DrumTrackStudio.ps1`, `drumtrackstudio/__init__.py`,
-`Build-Exe.ps1`, `Build-Installer.ps1` and `installer.iss`, and add
-`release-notes/vX.Y.Z.md`; it becomes the release description, and the build stops
-early if it's missing.
+CI (GitHub Actions) runs lint and the **full Windows build** (runtime, exe, installer)
+on every pull request and every push to `main`. The installer from each run is
+attached to the run as a downloadable artifact, so you can test it on Windows before
+releasing. Pushing a version tag (`v*`) runs the same build and publishes the release.
+
+To release `vX.Y.Z`:
+
+1. Bump the version in `DrumTrackStudio.ps1`, `drumtrackstudio/__init__.py`,
+   `Build-Exe.ps1`, `Build-Installer.ps1` and `installer.iss`, and add
+   `release-notes/vX.Y.Z.md` (it becomes the release description).
+2. Merge to `main` and **wait for the build to go green** there.
+3. Tag that commit: `git tag vX.Y.Z && git push origin vX.Y.Z`. A tag build stops early
+   if the versions don't match the tag or the notes file is missing.
+
+Everything the build downloads is pinned to an exact version and hash in
+`tools.lock.json`, including the build-only PS2EXE, and nothing is fetched as
+"latest". Every release failure so far came from an unpinned download changing
+underneath the build.
 
 ## Project layout
 
