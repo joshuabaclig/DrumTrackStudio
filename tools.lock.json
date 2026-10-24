@@ -23,5 +23,14 @@
       "url": "https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-pc-windows-msvc.zip",
       "_note": "REQUIRED, not optional - yt-dlp shells out to this as its JS runtime to pass YouTube's anti-bot/signature challenge. Without it, downloads fail with HTTP 403. Not referenced by name anywhere in our own scripts, which is exactly why it got dropped once already - don't repeat that mistake."
     }
+  },
+  "buildTools": {
+    "_comment": "Build-time only (not shipped). Pinned for the same reason as the tools above: the v1.3.0 release build failed because Install-Module fetched 'latest' PS2EXE from the PowerShell Gallery while that entry was being republished. Build-Exe.ps1 downloads this exact version and verifies the hash.",
+    "ps2exe": {
+      "version": "1.0.18",
+      "url": "https://www.powershellgallery.com/api/v2/package/ps2exe/1.0.18",
+      "sha256": "692124163d0e71262d76e2f2b2588e1661df28a8f0cf3b1725e47a957afce39f",
+      "_note": "Hash of the .nupkg; it also matches the Gallery's published SHA512 for 1.0.18."
+    }
   }
 }

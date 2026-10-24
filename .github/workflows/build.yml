@@ -1,63 +1,81 @@
 name: build
 
+# The full Windows build (runtime + exe + installer) runs on EVERY pull request and
+# push to main, not only on release tags - so a broken build shows up before you tag,
+# never at release time. Only v* tags publish a GitHub release.
+#
+# Release-build rules (each one is a past release failure):
+# - Everything downloaded is pinned to an exact version + hash (tools.lock.json);
+#   never "latest" from GitHub, the PowerShell Gallery or Chocolatey.
+# - Runner images are pinned (windows-2025), and tools the image already ships
+#   (Inno Setup, PSScriptAnalyzer) are used instead of installed.
+# - Downloads retry, so a server hiccup doesn't fail a release.
+
 on:
   push:
     branches: [main]
     tags: ['v*']
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   lint:
-    runs-on: windows-latest
+    runs-on: windows-2025
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: PSScriptAnalyzer
         shell: pwsh
         run: |
-          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          # preinstalled on the windows-2025 image - no Gallery download
+          Import-Module PSScriptAnalyzer
           $results = Invoke-ScriptAnalyzer -Path . -Recurse -Severity Warning,Error `
             -ExcludeRule PSAvoidUsingWriteHost, PSUseShouldProcessForStateChangingFunctions, PSUseApprovedVerbs
           $results | Format-Table -AutoSize | Out-String | Write-Host
           if ($results | Where-Object Severity -eq 'Error') { exit 1 }
 
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
+  build:
     needs: lint
-    runs-on: windows-latest
+    runs-on: windows-2025
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Check release notes exist
+      - name: Check release is ready (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         run: |
-          $notes = 'release-notes/${{ github.ref_name }}.md'
-          if (-not (Test-Path $notes)) { throw "Missing $notes - write the release notes before tagging." }
+          $tag = '${{ github.ref_name }}'
+          $v = $tag -replace '^v',''
+          $problems = @()
+          if (-not (Test-Path "release-notes/$tag.md")) { $problems += "missing release-notes/$tag.md" }
+          if ((Get-Content DrumTrackStudio.ps1 -Raw) -notmatch "\`$AppVersion = '$([regex]::Escape($v))'") {
+              $problems += "DrumTrackStudio.ps1 `$AppVersion is not $v" }
+          if ((Get-Content drumtrackstudio/__init__.py -Raw) -notmatch "__version__ = '$([regex]::Escape($v))'") {
+              $problems += "drumtrackstudio/__init__.py __version__ is not $v" }
+          if ($problems) { throw "Not ready to release ${tag}: $($problems -join '; ')" }
 
       - name: Fetch vendored binaries
         shell: pwsh
         run: |
-          # bin/*.exe are not committed; fetch from official sources, then VERIFY
-          # against the pinned hashes in tools.lock.json (Build-Runtime.ps1 does the
-          # verification and fails the build on any mismatch).
-          New-Item -ItemType Directory -Force -Path bin | Out-Null
+          # bin/*.exe are not committed; fetch the pinned versions, then VERIFY against
+          # tools.lock.json (Build-Runtime.ps1 fails the build on any mismatch).
           # Versioned urls, matching tools.lock.json - upgrade all three places together.
-          Invoke-WebRequest -Uri 'https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.21/yt-dlp.exe' -OutFile bin/yt-dlp.exe
-          Invoke-WebRequest -Uri 'https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip' -OutFile ff.zip
+          $retry = @{ MaximumRetryCount = 5; RetryIntervalSec = 15 }
+          New-Item -ItemType Directory -Force -Path bin | Out-Null
+          Invoke-WebRequest @retry -Uri 'https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.21/yt-dlp.exe' -OutFile bin/yt-dlp.exe
+          Invoke-WebRequest @retry -Uri 'https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip' -OutFile ff.zip
           Expand-Archive ff.zip -DestinationPath fftmp -Force
           $ff = Get-ChildItem fftmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1
           Copy-Item $ff.FullName bin/ffmpeg.exe
           Copy-Item (Join-Path $ff.DirectoryName 'ffprobe.exe') bin/ffprobe.exe
           Remove-Item ff.zip, fftmp -Recurse -Force
-          Invoke-WebRequest -Uri 'https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-pc-windows-msvc.zip' -OutFile deno.zip
+          Invoke-WebRequest @retry -Uri 'https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-pc-windows-msvc.zip' -OutFile deno.zip
           Expand-Archive deno.zip -DestinationPath denotmp -Force
           $deno = Get-ChildItem denotmp -Recurse -Filter deno.exe | Select-Object -First 1
           Copy-Item $deno.FullName bin/deno.exe
           Remove-Item deno.zip, denotmp -Recurse -Force
-          # The next step verifies these against tools.lock.json and fails the build
-          # on any mismatch.
 
       - name: Verify binaries + build runtime
         shell: pwsh
@@ -67,22 +85,36 @@ jobs:
         shell: pwsh
         env:
           DTS_CERT_THUMBPRINT: ${{ secrets.DTS_CERT_THUMBPRINT }}
-        run: ./Build-Exe.ps1 -Version ('${{ github.ref_name }}' -replace '^v','')
-
-      - name: Install Inno Setup
-        run: choco install innosetup -y --no-progress
+        run: |
+          # tags build their own version; other builds use the version in the scripts
+          if ('${{ github.ref_type }}' -eq 'tag') { ./Build-Exe.ps1 -Version ('${{ github.ref_name }}' -replace '^v','') }
+          else { ./Build-Exe.ps1 }
 
       - name: Build installer
         shell: pwsh
         env:
           DTS_CERT_THUMBPRINT: ${{ secrets.DTS_CERT_THUMBPRINT }}
-        run: ./Build-Installer.ps1 -Version ('${{ github.ref_name }}' -replace '^v','')
+        run: |
+          # Inno Setup 6 is preinstalled on the windows-2025 image (Build-Installer.ps1 finds it)
+          if ('${{ github.ref_type }}' -eq 'tag') { ./Build-Installer.ps1 -Version ('${{ github.ref_name }}' -replace '^v','') }
+          else { ./Build-Installer.ps1 }
 
-      - name: Upload release artifacts
-        uses: softprops/action-gh-release@v2
+      - name: Upload installer for testing (non-release builds)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v7
         with:
-          # every v* tag needs a matching release-notes/<tag>.md (checked at the start of this job)
+          name: DrumTrackStudio-Setup-test-build
+          path: |
+            dist/DrumTrackStudio-Setup-*.exe
+            dist/checksums.txt
+          retention-days: 14
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
           body_path: release-notes/${{ github.ref_name }}.md
+          fail_on_unmatched_files: true
           files: |
             dist/DrumTrackStudio-Setup-*.exe
             dist/checksums.txt
