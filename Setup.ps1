@@ -1,94 +1,96 @@
-# DEVELOPER setup only. End users should install the packaged installer from the
-# GitHub Releases page instead - it bundles everything and needs no Python.
+# DEVELOPER setup on Windows - the counterpart of setup.sh on macOS/Linux. End users
+# should install the packaged installer from the GitHub Releases page instead: it
+# bundles everything and needs no Python.
 #
-# This script prepares a DEV environment for working on the app from a fresh clone:
-# fetches the pinned third-party binaries into bin/ (hash-verified against
-# tools.lock.json) and builds the env/ venv from requirements.lock.txt.
-# Requires Python 3.10+ on PATH.
+# Fetches the pinned ffmpeg/ffprobe/deno into bin/ (hash-checked against
+# tools.lock.json) and builds the env/ venv with Python 3.12 and the same pinned
+# packages every OS uses (requirements-app.lock.txt + requirements-dev.lock.txt).
+# Afterwards:   env\Scripts\python -m drumtrackstudio          (the app)
+#               env\Scripts\python -m pytest                   (the tests)
+# Needs Python 3.12 from python.org (the 'py' launcher it installs is used).
+#   -BinOnly   just fetch/verify bin\ (what the CI installer build needs)
+param([switch]$NoPause, [switch]$BinOnly)
 
 $ErrorActionPreference = 'Stop'
 $Root   = $PSScriptRoot
 $BinDir = Join-Path $Root 'bin'
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
-
-function Get-FileIfMissing([string]$Url, [string]$Dest) {
-    if (Test-Path -LiteralPath $Dest) { Write-Host "Already have $(Split-Path $Dest -Leaf)."; return }
-    Write-Host "Downloading $(Split-Path $Dest -Leaf)..."
-    Invoke-WebRequest -Uri $Url -OutFile $Dest
-}
-
-# ---------- pinned third-party binaries ----------
-# Versioned urls, matching tools.lock.json - upgrade all three places together.
-Get-FileIfMissing 'https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.21/yt-dlp.exe' `
-    (Join-Path $BinDir 'yt-dlp.exe')
-
-$ffmpegExe = Join-Path $BinDir 'ffmpeg.exe'
-if (-not (Test-Path -LiteralPath $ffmpegExe)) {
-    Write-Host 'Downloading ffmpeg (~100MB, one time)...'
-    $ffZip = Join-Path $env:TEMP 'dts_ffmpeg.zip'
-    $ffTmp = Join-Path $env:TEMP 'dts_ffmpeg_extract'
-    Invoke-WebRequest -Uri 'https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip' -OutFile $ffZip
-    Remove-Item -Recurse -Force $ffTmp -ErrorAction SilentlyContinue
-    Expand-Archive -Path $ffZip -DestinationPath $ffTmp -Force
-    $found = Get-ChildItem -Path $ffTmp -Recurse -Filter 'ffmpeg.exe' | Select-Object -First 1
-    Copy-Item $found.FullName $ffmpegExe -Force
-    Copy-Item (Join-Path $found.DirectoryName 'ffprobe.exe') (Join-Path $BinDir 'ffprobe.exe') -Force
-    Remove-Item $ffZip -Force -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force $ffTmp -ErrorAction SilentlyContinue
-} else {
-    Write-Host 'Already have ffmpeg.exe / ffprobe.exe.'
-}
-
-# ---------- deno (REQUIRED: yt-dlp uses it as a JS runtime to pass YouTube's
-# anti-bot challenge - without it, downloads fail with HTTP 403) ----------
-$denoExe = Join-Path $BinDir 'deno.exe'
-if (-not (Test-Path -LiteralPath $denoExe)) {
-    Write-Host 'Downloading deno (~40MB, one time)...'
-    $denoZip = Join-Path $env:TEMP 'dts_deno.zip'
-    $denoTmp = Join-Path $env:TEMP 'dts_deno_extract'
-    Invoke-WebRequest -Uri 'https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-pc-windows-msvc.zip' -OutFile $denoZip
-    Remove-Item -Recurse -Force $denoTmp -ErrorAction SilentlyContinue
-    Expand-Archive -Path $denoZip -DestinationPath $denoTmp -Force
-    $found = Get-ChildItem -Path $denoTmp -Recurse -Filter 'deno.exe' | Select-Object -First 1
-    Copy-Item $found.FullName $denoExe -Force
-    Remove-Item $denoZip -Force -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force $denoTmp -ErrorAction SilentlyContinue
-} else {
-    Write-Host 'Already have deno.exe.'
-}
-
-# verify what we have against the pinned hashes (warn-only for dev: an older bin/
-# from before a re-pin won't match; release builds hard-fail instead via Build-Runtime.ps1)
 $lock = Get-Content (Join-Path $Root 'tools.lock.json') -Raw | ConvertFrom-Json
+
+function Save-Url([string]$Url, [string]$Dest) {
+    for ($i = 1; $i -le 4; $i++) {
+        try { Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing; return }
+        catch { if ($i -eq 4) { throw }; Write-Host "  retrying ($($_.Exception.Message))"; Start-Sleep -Seconds (5 * $i) }
+    }
+}
+function Expand-Tool([string]$ZipUrl, [string[]]$Names) {
+    $zip = Join-Path $env:TEMP ('dts_' + [guid]::NewGuid() + '.zip')
+    $tmp = Join-Path $env:TEMP ('dts_' + [guid]::NewGuid())
+    try {
+        Save-Url $ZipUrl $zip
+        Expand-Archive -Path $zip -DestinationPath $tmp -Force
+        foreach ($n in $Names) {
+            $found = Get-ChildItem -Path $tmp -Recurse -Filter $n | Select-Object -First 1
+            if (-not $found) { throw "$n not found in $ZipUrl" }
+            Copy-Item $found.FullName (Join-Path $BinDir $n) -Force
+        }
+    } finally {
+        Remove-Item $zip -Force -ErrorAction SilentlyContinue
+        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# ---------- pinned third-party binaries (urls from tools.lock.json) ----------
+foreach ($group in @(@{ Names = @('ffmpeg.exe', 'ffprobe.exe'); Key = 'ffmpeg.exe' },
+                     @{ Names = @('deno.exe'); Key = 'deno.exe' })) {
+    $missing = @($group.Names | Where-Object { -not (Test-Path -LiteralPath (Join-Path $BinDir $_)) })
+    if ($missing) {
+        Write-Host "Downloading $($group.Names -join ' + ') (one time)..."
+        Expand-Tool $lock.tools.($group.Key).url $group.Names
+    } else {
+        Write-Host "Already have $($group.Names -join ' + ')."
+    }
+}
 foreach ($tool in $lock.tools.PSObject.Properties) {
     $path = Join-Path $BinDir $tool.Name
-    if (Test-Path -LiteralPath $path) {
-        $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLower()
-        if ($actual -ne $tool.Value.sha256.ToLower()) {
-            Write-Host "NOTE: bin\$($tool.Name) does not match the pinned hash in tools.lock.json." -ForegroundColor Yellow
-            Write-Host '      (Probably left over from an older pin: delete it and re-run Setup.ps1 to fetch the pinned version.)'
-        }
+    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLower() -ne $tool.Value.sha256.ToLower()) {
+        Write-Host "NOTE: bin\$($tool.Name) is not the pinned version in tools.lock.json." -ForegroundColor Yellow
+        Write-Host '      (Probably left over from an older pin: delete it and re-run Setup.ps1.)'
     }
 }
+# yt-dlp is a pinned Python package now (requirements-app.lock.txt); an old bin\yt-dlp.exe is unused
+Remove-Item (Join-Path $BinDir 'yt-dlp.exe') -Force -ErrorAction SilentlyContinue
+if ($BinOnly) { return }
 
-# ---------- dev venv with pinned packages ----------
+# ---------- dev venv: Python 3.12, same pins as every other OS ----------
 $EnvDir = Join-Path $Root 'env'
 $VenvPy = Join-Path $EnvDir 'Scripts\python.exe'
-if (-not (Test-Path -LiteralPath $VenvPy)) {
-    Write-Host 'Creating Python virtual environment (requires Python 3.10+ on PATH)...'
-    python -m venv $EnvDir
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Could not create venv. Install Python 3.10+ from python.org and ensure "python" is on PATH.'
+if (Test-Path -LiteralPath $VenvPy) {
+    $v = & $VenvPy -c 'import sys; print(*sys.version_info[:2], sep=chr(46))'
+    if ("$v".Trim() -ne '3.12') {
+        Write-Host "env\ uses Python $v - rebuilding it with 3.12..."
+        Remove-Item -LiteralPath $EnvDir -Recurse -Force
     }
 }
+if (-not (Test-Path -LiteralPath $VenvPy)) {
+    Write-Host 'Creating the Python 3.12 virtual environment...'
+    & py -3.12 -m venv $EnvDir
+    if ($LASTEXITCODE -ne 0) { throw 'Could not create env\ - install Python 3.12 from python.org (it includes the "py" launcher).' }
+}
 
-Write-Host 'Installing pinned packages (torch is large; several minutes)...'
-& $VenvPy -m pip install --upgrade pip
-& $VenvPy -m pip install --index-url https://download.pytorch.org/whl/cpu `
+Write-Host 'Installing pinned packages (torch is large; several minutes the first time)...'
+& $VenvPy -m pip install --disable-pip-version-check --quiet --upgrade pip
+& $VenvPy -m pip install --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu `
     --extra-index-url https://pypi.org/simple `
-    -r (Join-Path $Root 'requirements.lock.txt')
+    -r (Join-Path $Root 'requirements-app.lock.txt') -r (Join-Path $Root 'requirements-dev.lock.txt')
+if ($LASTEXITCODE -ne 0) { throw 'Package installation failed.' }
+
+& $VenvPy -c 'import demucs.separate, librosa, yt_dlp, PySide6.QtMultimedia, pytest'
+if ($LASTEXITCODE -ne 0) { throw 'Smoke test failed - a package did not import. See the output above.' }
 
 Write-Host ''
-Write-Host 'Dev setup complete. Run the app with: powershell -File DrumTrackStudio.ps1' -ForegroundColor Green
-Write-Host 'To build the distributable: Build-Runtime.ps1 -> Build-Exe.ps1 -> Build-Installer.ps1' -ForegroundColor Green
-Read-Host 'Press Enter to close'
+Write-Host 'Dev setup complete.' -ForegroundColor Green
+Write-Host '  Run the app:     env\Scripts\python -m drumtrackstudio'
+Write-Host '  Run the tests:   env\Scripts\python -m pytest'
+Write-Host '  Build installer: Build-Runtime.ps1, then Build-Installer.ps1'
+if (-not $NoPause -and [Environment]::UserInteractive -and $Host.Name -eq 'ConsoleHost') { Read-Host 'Press Enter to close' | Out-Null }

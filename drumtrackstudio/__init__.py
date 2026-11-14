@@ -3,5 +3,5 @@
 The pipeline (pipeline.py) has no Qt dependency so it can be driven from the GUI
 (gui.py) or the terminal (cli.py) alike.
 """
-__version__ = '1.3.0'
+__version__ = '1.4.0'
 REPO_SLUG = 'joshuabaclig/DrumTrackStudio'

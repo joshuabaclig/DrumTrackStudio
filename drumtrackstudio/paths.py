@@ -1,7 +1,7 @@
 """Per-OS locations for settings, logs, output folders and bundled tools.
 
-Windows paths match the PowerShell app exactly, so both versions share one
-settings.json while the PowerShell app is still around.
+Windows paths are the ones the old PowerShell app (<= v1.3) used, so upgrading
+Windows users keep their settings.json and log folder.
 """
 import os
 import shutil
@@ -56,6 +56,20 @@ def desktop_entry_installed() -> bool:
         return False
     data_home = Path(os.environ.get('XDG_DATA_HOME') or Path.home() / '.local' / 'share')
     return (data_home / 'applications' / 'drumtrackstudio.desktop').is_file()
+
+
+def python_exe() -> str:
+    """The interpreter to run child Python processes (yt-dlp, demucs, feature
+    detection) with. The Windows install launches the GUI with pythonw.exe (no
+    console window); children get the console python.exe next to it instead,
+    which pipeline.run_tool starts with CREATE_NO_WINDOW so no window appears
+    either way, and whose stdout/stderr pipes behave like any console program's."""
+    exe = Path(sys.executable)
+    if exe.name.lower() == 'pythonw.exe':
+        console = exe.with_name('python.exe')
+        if console.is_file():
+            return str(console)
+    return sys.executable
 
 
 def find_tool(name: str):

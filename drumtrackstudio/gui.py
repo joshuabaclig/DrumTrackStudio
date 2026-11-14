@@ -1,5 +1,6 @@
-"""Qt (PySide6) window - same two tabs, modes and settings as the WinForms app.
-The pipeline runs on a worker thread and reports back through Qt signals."""
+"""Qt (PySide6) main window - the app on Windows, macOS and Linux.
+The pipeline runs on a worker thread and reports back through Qt signals; after a
+download it asks for a trim/lead-in edit, which opens the editor on the GUI thread."""
 import json
 import os
 import subprocess
@@ -17,9 +18,11 @@ from PySide6.QtWidgets import (
 )
 
 from . import REPO_SLUG, __version__, paths, settings
+from .edit import EditRequest
 from .pipeline import Cancelled, Job, Pipeline, PipelineError, missing_tools, open_log, write_log
 
 TITLE = 'Drum Track Studio'
+APP_USER_MODEL_ID = 'joshuabaclig.DrumTrackStudio'
 ACCENT = '#c6392b'
 ACCENT_DARK = '#a02c21'
 
@@ -29,6 +32,7 @@ class Bridge(QObject):
     status = Signal(str)
     progress = Signal(str, int)
     finished = Signal(object, str)   # (Result or None, error message)
+    edit_requested = Signal(object)  # EditRequest - worker waits until it's answered
     update_available = Signal(str)
 
 
@@ -81,10 +85,12 @@ class MainWindow(QMainWindow):
                 pass
         self.log_file = open_log()
         self.pipeline = None
+        self.editor = None
         self.bridge = Bridge()
         self.bridge.status.connect(self.on_status)
         self.bridge.progress.connect(self.on_progress)
         self.bridge.finished.connect(self.on_finished)
+        self.bridge.edit_requested.connect(self.on_edit_requested)
         self.bridge.update_available.connect(self.on_update_available)
 
         tabs = QTabWidget()
@@ -203,7 +209,7 @@ class MainWindow(QMainWindow):
         grid.addWidget(small(QLabel(
             'Applies to all modes. Karaoke/Drumless/Custom are separated as WAV first, then converted, '
             'so non-WAV formats take a little longer. ("best" = keep whatever YouTube serves; separated '
-            'mixes stay WAV.)')), 1, 0, 1, 2)
+            'mixes, and tracks opened in the trim editor, stay WAV. Opus is always 48 kHz.)')), 1, 0, 1, 2)
 
         self.cmb_rate = QComboBox()
         self.cmb_rate.addItems(list(settings.RATE_DISPLAY))
@@ -250,6 +256,14 @@ class MainWindow(QMainWindow):
         self.chk_click.setChecked(bool(self.s['ClickTrack']))
         self.chk_click.toggled.connect(lambda on: self.set_and_save('ClickTrack', on))
         v.addWidget(self.chk_click)
+
+        self.chk_trim = QCheckBox('Open the trim editor after each download')
+        self.chk_trim.setChecked(bool(self.s['TrimEditor']))
+        self.chk_trim.toggled.connect(lambda on: self.set_and_save('TrimEditor', on))
+        v.addWidget(self.chk_trim)
+        v.addWidget(small(QLabel(
+            'Cut a sampled intro or ending and add a silent lead-in so you have time to get ready. '
+            'Edits are applied before separation, so stems and the click track line up with them.')))
 
         self.lbl_saved = QLabel('')
         self.lbl_saved.setStyleSheet(f"color: {ACCENT};")
@@ -345,7 +359,9 @@ class MainWindow(QMainWindow):
                   format=self.s['Format'], sample_rate=self.s['SampleRate'], model=self.s['Model'],
                   practice_speeds=list(self.s['PracticeSpeeds']), click_track=bool(self.s['ClickTrack']))
         self.log_file = open_log()   # the app may stay open past midnight
-        self.pipeline = Pipeline(job, self.log_file, self.bridge.status.emit, self.bridge.progress.emit)
+        on_edit = self.bridge.edit_requested.emit if self.s['TrimEditor'] else None
+        self.pipeline = Pipeline(job, self.log_file, self.bridge.status.emit, self.bridge.progress.emit,
+                                 on_edit=on_edit)
         self.btn_go.setEnabled(False)
         self.btn_go.setText('Working...')
         self.lbl_status.setText('Starting...')
@@ -361,6 +377,35 @@ class MainWindow(QMainWindow):
         except Exception as e:  # noqa: BLE001 - surface anything unexpected to the user
             write_log(self.log_file, f"ERROR (unexpected): {e!r}")
             self.bridge.finished.emit(None, 'Processing stopped unexpectedly.')
+
+    def on_edit_requested(self, req: EditRequest) -> None:
+        """Runs on the GUI thread. Always answers req, or the worker waits forever."""
+        if req.answered or not self.pipeline:
+            return
+        from .editor import TrimEditorDialog
+        choice, spec = EditRequest.SKIP, None
+        try:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                self.editor = TrimEditorDialog(req.source, req.title, self.s['LeadInSeconds'], self)
+            finally:
+                QApplication.restoreOverrideCursor()
+            self.editor.exec()
+            choice = self.editor.choice
+            if choice == EditRequest.APPLY:
+                spec = self.editor.spec()
+                self.set_and_save('LeadInSeconds', float(spec.lead_in))
+        except Exception as e:  # noqa: BLE001 - never leave the worker hanging
+            write_log(self.log_file, f"Trim editor failed: {e!r}")
+            QMessageBox.warning(self, TITLE, f"The trim editor couldn't open ({e}).\n\n"
+                                             'Continuing without edits.')
+            choice, spec = EditRequest.SKIP, None
+        finally:
+            if self.editor:
+                self.editor.release()
+                self.editor.deleteLater()
+            self.editor = None
+        req.respond(choice, spec)
 
     def on_status(self, text) -> None:
         self.lbl_status.setText(text)
@@ -389,7 +434,9 @@ class MainWindow(QMainWindow):
                 reveal(result.out_file)
             else:
                 open_folder(self.s['OutputDir'])
-        elif error != 'Cancelled.':
+        elif error == 'Cancelled.':
+            self.lbl_status.setText('Cancelled.')
+        else:
             self.lbl_status.setText(f"Error: {error}")
             QMessageBox.critical(self, TITLE, f"Error: {error}\n\nDetails: use the 'Open logs' button.")
 
@@ -401,6 +448,9 @@ class MainWindow(QMainWindow):
                 e.ignore()
                 return
             self.pipeline.cancel()
+            if self.editor:
+                self.editor.confirm_close = False
+                self.editor.close()
         e.accept()
 
     # ------------------------------------------------------- update check -----
@@ -425,6 +475,14 @@ def _version_tuple(v: str):
 
 
 def main() -> int:
+    if paths.IS_WINDOWS:
+        # Own taskbar identity (icon + grouping) instead of pythonw.exe's; matches
+        # the AppUserModelID on the installer's Start Menu shortcut so pinning works.
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+        except (AttributeError, OSError):
+            pass
     app = QApplication(sys.argv)
     app.setApplicationName(TITLE)
     # Link the window to setup.sh's app-menu entry (taskbar icon on Wayland). Only

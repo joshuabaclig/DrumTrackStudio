@@ -75,7 +75,7 @@ else
 fi
 
 # ---------- smoke test ----------
-env/bin/python -c 'import demucs.separate, librosa, yt_dlp, PySide6' \
+env/bin/python -c 'import demucs.separate, librosa, yt_dlp, PySide6.QtMultimedia' \
     || fail 'Smoke test failed - a package did not import. See the output above.'
 
 # ---------- Linux: app-menu entry + icon (per user, no sudo) ----------

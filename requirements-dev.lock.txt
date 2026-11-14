@@ -1,0 +1,11 @@
+# Test-only pins (never shipped). On top of requirements-app.lock.txt:
+#   python -m pip install -r requirements-dev.lock.txt
+# colorama and packaging are already pinned in requirements.lock.txt (same versions);
+# they're repeated here so `pip install --no-deps -r requirements-dev.lock.txt`
+# (Build-Runtime.ps1 -RunTests) is complete on its own.
+pytest==9.2.0
+pluggy==1.7.0
+iniconfig==2.3.1
+Pygments==2.21.0
+packaging==25.0
+colorama==0.4.6

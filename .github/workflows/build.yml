@@ -1,88 +1,147 @@
 name: build
 
+# One app on every OS (drumtrackstudio/, Python + Qt). Every pull request and push to
+# main runs:
+#   test           - the test suite on Windows, macOS and Linux, each set up with its
+#                    real setup script (Setup.ps1 / setup.sh), so a broken setup fails too
+#   build-windows  - the full Windows installer build; the test suite runs again on the
+#                    PACKAGED runtime (after pruning), and the installer is uploaded as
+#                    an artifact for testing. Only v* tags publish a GitHub release.
+#
+# Release-build rules (each one is a past release failure):
+# - Everything downloaded is pinned to an exact version + hash (tools.lock.json,
+#   requirements*.lock.txt); never "latest" from anywhere.
+# - Runner images are pinned, and tools the image already ships (Inno Setup,
+#   PSScriptAnalyzer) are used instead of installed.
+# - Downloads retry, so a server hiccup doesn't fail a release.
+
 on:
   push:
     branches: [main]
     tags: ['v*']
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.12.10'   # same as the Windows runtime (tools.lock.json)
 
 jobs:
   lint:
-    runs-on: windows-latest
+    runs-on: windows-2025
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: PSScriptAnalyzer
         shell: pwsh
         run: |
-          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          # preinstalled on the windows-2025 image - no Gallery download
+          Import-Module PSScriptAnalyzer
           $results = Invoke-ScriptAnalyzer -Path . -Recurse -Severity Warning,Error `
             -ExcludeRule PSAvoidUsingWriteHost, PSUseShouldProcessForStateChangingFunctions, PSUseApprovedVerbs
           $results | Format-Table -AutoSize | Out-String | Write-Host
           if ($results | Where-Object Severity -eq 'Error') { exit 1 }
 
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: lint
-    runs-on: windows-latest
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: System packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # ffmpeg + the libraries Qt needs headless (offscreen) and for QtMultimedia
+          sudo apt-get install -y --no-install-recommends ffmpeg libegl1 libgl1 libxkbcommon0 \
+            libfontconfig1 libdbus-1-3 libpulse0 libglib2.0-0
+      - name: System packages (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+
+      - name: Setup (setup.sh)
+        if: runner.os != 'Windows'
+        run: |
+          for i in 1 2 3; do ./setup.sh && break; [ $i = 3 ] && exit 1; sleep 20; done
+          env/bin/python -m pip install -r requirements-dev.lock.txt
+      - name: Setup (Setup.ps1)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./Setup.ps1 -NoPause
+
+      - name: Tests
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then PY=env/Scripts/python; else PY=env/bin/python; fi
+          # 'audio' tests need a real sound device, which runners don't have
+          $PY -m pytest -m "not audio" -v
+
+  build-windows:
+    needs: [lint, test]
+    runs-on: windows-2025
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
 
-      - name: Check release notes exist
+      - name: Check release is ready (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         run: |
-          $notes = 'release-notes/${{ github.ref_name }}.md'
-          if (-not (Test-Path $notes)) { throw "Missing $notes - write the release notes before tagging." }
+          $tag = '${{ github.ref_name }}'
+          $v = $tag -replace '^v',''
+          $problems = @()
+          if (-not (Test-Path "release-notes/$tag.md")) { $problems += "missing release-notes/$tag.md" }
+          if ((Get-Content drumtrackstudio/__init__.py -Raw) -notmatch "__version__ = '$([regex]::Escape($v))'") {
+              $problems += "drumtrackstudio/__init__.py __version__ is not $v" }
+          if ((Get-Content installer.iss -Raw) -notmatch "#define MyAppVersion `"$([regex]::Escape($v))`"") {
+              $problems += "installer.iss MyAppVersion is not $v" }
+          if ($problems) { throw "Not ready to release ${tag}: $($problems -join '; ')" }
 
-      - name: Fetch vendored binaries
+      - name: Fetch pinned binaries
         shell: pwsh
-        run: |
-          # bin/*.exe are not committed; fetch from official sources, then VERIFY
-          # against the pinned hashes in tools.lock.json (Build-Runtime.ps1 does the
-          # verification and fails the build on any mismatch).
-          New-Item -ItemType Directory -Force -Path bin | Out-Null
-          # Versioned urls, matching tools.lock.json - upgrade all three places together.
-          Invoke-WebRequest -Uri 'https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.21/yt-dlp.exe' -OutFile bin/yt-dlp.exe
-          Invoke-WebRequest -Uri 'https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip' -OutFile ff.zip
-          Expand-Archive ff.zip -DestinationPath fftmp -Force
-          $ff = Get-ChildItem fftmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1
-          Copy-Item $ff.FullName bin/ffmpeg.exe
-          Copy-Item (Join-Path $ff.DirectoryName 'ffprobe.exe') bin/ffprobe.exe
-          Remove-Item ff.zip, fftmp -Recurse -Force
-          Invoke-WebRequest -Uri 'https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-pc-windows-msvc.zip' -OutFile deno.zip
-          Expand-Archive deno.zip -DestinationPath denotmp -Force
-          $deno = Get-ChildItem denotmp -Recurse -Filter deno.exe | Select-Object -First 1
-          Copy-Item $deno.FullName bin/deno.exe
-          Remove-Item deno.zip, denotmp -Recurse -Force
-          # The next step verifies these against tools.lock.json and fails the build
-          # on any mismatch.
+        run: ./Setup.ps1 -BinOnly -NoPause   # downloads with retries; Build-Runtime verifies hashes
 
-      - name: Verify binaries + build runtime
+      - name: Build runtime + test it as packaged
         shell: pwsh
-        run: ./Build-Runtime.ps1
-
-      - name: Build exe (signs only if cert secret configured)
-        shell: pwsh
-        env:
-          DTS_CERT_THUMBPRINT: ${{ secrets.DTS_CERT_THUMBPRINT }}
-        run: ./Build-Exe.ps1 -Version ('${{ github.ref_name }}' -replace '^v','')
-
-      - name: Install Inno Setup
-        run: choco install innosetup -y --no-progress
+        run: ./Build-Runtime.ps1 -RunTests
 
       - name: Build installer
         shell: pwsh
         env:
           DTS_CERT_THUMBPRINT: ${{ secrets.DTS_CERT_THUMBPRINT }}
-        run: ./Build-Installer.ps1 -Version ('${{ github.ref_name }}' -replace '^v','')
+        run: ./Build-Installer.ps1
 
-      - name: Upload release artifacts
-        uses: softprops/action-gh-release@v2
+      - name: Upload installer for testing (non-release builds)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v7
         with:
-          # every v* tag needs a matching release-notes/<tag>.md (checked at the start of this job)
+          name: DrumTrackStudio-Setup-test-build
+          path: |
+            dist/DrumTrackStudio-Setup-*.exe
+            dist/checksums.txt
+          retention-days: 14
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
           body_path: release-notes/${{ github.ref_name }}.md
+          fail_on_unmatched_files: true
           files: |
             dist/DrumTrackStudio-Setup-*.exe
             dist/checksums.txt

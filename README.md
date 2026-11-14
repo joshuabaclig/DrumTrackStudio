@@ -17,6 +17,21 @@ saved to your `Documents\DrumTrackStudio\Downloads` folder named
 `<Song Title> - Karaoke.wav` / `<Song Title> - Drumless.wav` so they're easy to
 drag onto a USB stick without collisions.
 
+### Trim & lead-in editor
+
+Some videos open with a sampled intro, others start the song instantly with no time
+to sit down at the kit. After each download, the **trim editor** opens:
+
+- **Scrub** the waveform: click to move the playhead, scroll to zoom, play and pause.
+- **Cut** a sampled intro or ending by dragging the Start/End handles (or typing
+  times like `0:12.5`), with ±10 ms / ±100 ms nudges and "Trim silence".
+- **Add a lead-in gap** of up to 30 seconds of silence before the song, and
+  **Preview** it with a countdown, exactly as the finished track will play.
+
+Edits are applied before stem separation, so the karaoke/drumless mix, the
+practice-speed copies and the click track all line up with the trimmed track.
+"Keep original" skips editing for that song; the Settings tab turns the editor off.
+
 Stem separation uses [Demucs](https://github.com/facebookresearch/demucs) (Meta's
 open-source source-separation model), running locally on CPU — no cloud service,
 no API key, and no Python installation needed (the installer bundles everything).
@@ -93,6 +108,7 @@ the app's saved settings:
 ```bash
 ./run.sh "https://www.youtube.com/watch?v=..." --mode drumless
 ./run.sh "https://www.youtube.com/watch?v=..." --mode custom --remove vocals bass
+./run.sh "https://www.youtube.com/watch?v=..." --mode drumless --trim-start 0:12.5 --lead-in 4
 ./run.sh --help
 ```
 
@@ -111,67 +127,70 @@ setting.)
 
 ## Building from source (developers)
 
-There are currently two front ends sharing the same audio engine (Demucs, librosa,
-yt-dlp, ffmpeg):
+There's one app, `drumtrackstudio/` (Python + Qt), on every OS. Windows, macOS and
+Linux run the same code with the same pinned packages on Python 3.12; only the way
+it's set up and launched differs.
 
-- `drumtrackstudio/` - the cross-platform **Python + Qt** app. On macOS/Linux,
-  `./setup.sh` is the whole dev setup. On Windows it also runs from source: create a
-  Python 3.12 venv and `pip install` `requirements-app.lock.txt` with the same index
-  flags `setup.sh` uses, put ffmpeg/ffprobe/deno in `bin\` (`Setup.ps1` fetches them),
-  then `python -m drumtrackstudio`.
-- `DrumTrackStudio.ps1` - the original **WinForms** app, which the Windows installer
-  still ships. It stays the Windows release until the Python app has its own
-  installer.
+| | macOS / Linux | Windows |
+| --- | --- | --- |
+| Dev setup | `./setup.sh` | `./Setup.ps1` (needs [Python 3.12](https://www.python.org/downloads/)) |
+| Run the app | `./run.sh` | `env\Scripts\python -m drumtrackstudio` |
+| Run the tests | `env/bin/python -m pytest` | `env\Scripts\python -m pytest` |
 
-Windows installer build requirements: Windows 10/11, PowerShell 5.1+, [Python 3.10+](https://www.python.org/downloads/)
-on PATH (dev only — end users never need it), and [Inno Setup 6](https://jrsoftware.org/isinfo.php)
-to build the installer.
+Both setup scripts install `requirements-app.lock.txt` (the app);
+`requirements-dev.lock.txt` adds pytest (`Setup.ps1` installs it, on macOS/Linux run
+`env/bin/python -m pip install -r requirements-dev.lock.txt`). The tests run headless
+(Qt's offscreen platform) and include real ffmpeg edits, the trim editor and the full
+GUI round trip; `-m slow` also runs a real Demucs separation, and `-m audio` plays
+(muted) through your sound device.
+
+**Windows installer.** The installer bundles an embeddable Python 3.12 (`runtime\`)
+with the pinned packages, the app, and ffmpeg/ffprobe/deno (`bin\`); its Start Menu
+shortcut runs `runtime\pythonw.exe -m drumtrackstudio`. Building it needs Windows
+10/11, Python 3.12 and [Inno Setup 6](https://jrsoftware.org/isinfo.php):
 
 ```powershell
-./Setup.ps1            # dev environment: fetches bin/ tools, builds env/ venv (pinned versions)
-./Build-Runtime.ps1    # verifies bin/ hashes, builds the self-contained runtime/ bundle
-./Build-Exe.ps1        # compiles DrumTrackStudio.ps1 -> DrumTrackStudio.exe (PS2EXE)
-./Build-Installer.ps1  # produces dist/DrumTrackStudio-Setup-<version>.exe + checksums.txt
+./Setup.ps1 -BinOnly           # fetch the pinned ffmpeg/ffprobe/deno into bin\
+./Build-Runtime.ps1 -RunTests  # verify bin\ hashes, build runtime\, test the app ON that runtime
+./Build-Installer.ps1          # dist\DrumTrackStudio-Setup-<version>.exe + checksums.txt
 ```
 
-Dependency pinning: Python packages are locked in `requirements.lock.txt`; the
-vendored yt-dlp/ffmpeg builds are pinned by SHA256 in `tools.lock.json` and verified
-before packaging. To upgrade a tool, swap the exe, test end-to-end, and update the
-hash in the same commit.
+Dependency pinning: Python packages are locked in `requirements*.lock.txt`; the
+embeddable Python and the ffmpeg/ffprobe/deno builds are pinned by SHA256 in
+`tools.lock.json` and verified before packaging. To upgrade one, change it, test
+end-to-end, and update the pin in the same commit.
 
-Optional code signing: if you have a certificate (e.g. an internal company cert
-pushed to managed machines via Intune/GPO), set `DTS_CERT_THUMBPRINT` to its
-thumbprint (CurrentUser\My store) and the build scripts sign the exe and installer
-via signtool; with no cert configured, signing is skipped cleanly.
+Optional code signing: set `DTS_CERT_THUMBPRINT` to a certificate's thumbprint
+(CurrentUser\My store) and `Build-Installer.ps1` signs the installer via signtool;
+with no cert configured, signing is skipped cleanly.
 
-Releases are built automatically by GitHub Actions on version tags (`v*`), including
-lint (PSScriptAnalyzer), the full build chain, and checksum generation. Before tagging
-`vX.Y.Z`, bump the version in `DrumTrackStudio.ps1`, `drumtrackstudio/__init__.py`,
-`Build-Exe.ps1`, `Build-Installer.ps1` and `installer.iss`, and add
-`release-notes/vX.Y.Z.md`; it becomes the release description, and the build stops
-early if it's missing.
+GitHub Actions runs the tests on Windows, macOS and Linux and builds the Windows
+installer on every pull request (the installer is attached to the run for testing).
+Version tags (`v*`) publish a release. Before tagging `vX.Y.Z`, set the version in
+`drumtrackstudio/__init__.py` and `installer.iss` and add `release-notes/vX.Y.Z.md`;
+it becomes the release description, and the build stops early if any is missing.
 
 ## Project layout
 
 ```
-drumtrackstudio/        cross-platform Python + Qt app
-  pipeline.py           download/separate/mix pipeline (no GUI dependency)
-  gui.py                Qt window
-  cli.py                terminal front end (./run.sh <url>)
-  settings.py, paths.py settings.json + per-OS folders
-setup.sh, run.sh        macOS/Linux setup and launcher
-requirements-app.lock.txt  extra pins for the Python app (Qt, yt-dlp)
-tools/detect_features.py   BPM/key detection + click track (both apps)
-DrumTrackStudio.ps1     Windows WinForms app: GUI + in-process pipeline (source)
-Build-Runtime.ps1       builds the bundled Python runtime; verifies vendored binaries
-Build-Exe.ps1           compiles the exe (PS2EXE), optional signing, checksum
-Build-Installer.ps1     builds the Inno Setup installer
-installer.iss           installer definition
-Setup.ps1               developer environment bootstrap
-requirements.lock.txt   pinned Python dependencies
-tools.lock.json         pinned SHA256 hashes for yt-dlp/ffmpeg/ffprobe
-app.ico                 app icon
-.github/workflows/      lint + release automation
+drumtrackstudio/           the app (every OS)
+  pipeline.py              download -> edit -> analyze -> separate -> mix (no GUI dependency)
+  edit.py                  trim/lead-in model, ffmpeg filter, worker<->editor hand-off
+  editor.py                the trim & lead-in editor window
+  gui.py                   main window
+  cli.py                   terminal front end (./run.sh <url>)
+  settings.py, paths.py    settings.json + per-OS folders
+tools/detect_features.py   BPM/key detection + click track
+tests/                     pytest suite (headless)
+setup.sh, run.sh           macOS/Linux setup and launcher
+Setup.ps1                  Windows dev setup / fetches bin\ tools
+Build-Runtime.ps1          builds + tests the bundled Windows runtime
+Build-Installer.ps1        builds the Inno Setup installer
+installer.iss              installer definition
+requirements*.lock.txt     pinned Python packages (engine, app, tests)
+tools.lock.json            pinned SHA256 hashes: embeddable Python, ffmpeg, ffprobe, deno
+app.ico                    app icon
+.github/workflows/         tests on 3 OSes, Windows build, releases
 ```
 
 ## Credits / third-party tools
@@ -181,7 +200,7 @@ app.ico                 app icon
 - [Demucs](https://github.com/facebookresearch/demucs) — MIT
 - [Qt for Python (PySide6)](https://doc.qt.io/qtforpython/) — LGPL
 - [Deno](https://deno.com) — MIT
-- [PS2EXE](https://github.com/MScholtes/PS2EXE) — used only at build time to compile the .exe
+- [Python](https://www.python.org/) — PSF License (bundled in the Windows installer)
 - [Inno Setup](https://jrsoftware.org/isinfo.php) — used only at build time to build the installer
 
 ## A note on use

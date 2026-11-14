@@ -1,7 +1,10 @@
-"""settings.json load/save - same keys and validation as the PowerShell app."""
+"""settings.json load/save. Same file and keys the old Windows PowerShell app used
+(plus newer ones), so upgrading Windows users keep their settings."""
 import json
+import math
 
 from . import paths
+from .edit import MAX_LEAD_IN
 
 FORMAT_CHOICES = ['best', 'aac', 'alac', 'flac', 'm4a', 'mp3', 'opus', 'vorbis', 'wav']
 RATE_DISPLAY = {
@@ -29,7 +32,8 @@ def defaults() -> dict:
     return {'Format': 'wav', 'SampleRate': '44100',
             'OutputDir': str(base / 'Downloads'), 'StemsDir': str(base / 'Stems'),
             'Model': 'htdemucs', 'PracticeSpeeds': [], 'ClickTrack': False,
-            'CustomRemove': ['vocals']}
+            'CustomRemove': ['vocals'],
+            'TrimEditor': True, 'LeadInSeconds': 0.0}
 
 
 def load() -> dict:
@@ -56,6 +60,12 @@ def load() -> dict:
             cr = [str(x) for x in _as_list(j['CustomRemove']) if str(x) in ALL_STEMS]
             if cr:
                 s['CustomRemove'] = cr
+        if isinstance(j.get('TrimEditor'), bool):
+            s['TrimEditor'] = j['TrimEditor']
+        li = j.get('LeadInSeconds')
+        if (isinstance(li, (int, float)) and not isinstance(li, bool) and math.isfinite(li)
+                and 0 <= li <= MAX_LEAD_IN):
+            s['LeadInSeconds'] = float(li)
     except (OSError, ValueError, AttributeError):
         s = defaults()   # corrupted file -> defaults, never fatal
     return s
